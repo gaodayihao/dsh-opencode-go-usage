@@ -42,18 +42,10 @@ This package is a standard dsh **bundle**: it declares `dsh.bundle` in its manif
 ### From GitHub (recommended for users)
 
 ```sh
-dsh plugin --profile web add github:v587d/dsh-opencode-go-usage
+dsh plugin --profile web add github:gaodayihao/dsh-opencode-go-usage
 ```
 
 Because `lib/` is committed, pnpm installs the built package directly and never asks for a build-script allowance.
-
-### From npm (after a release)
-
-```sh
-dsh plugin --profile web add dsh-ocgo-usage
-```
-
-> **About the name:** the repo is `dsh-opencode-go-usage`, but that npm name is already taken by a similar third-party plugin, so the npm package publishes as `dsh-ocgo-usage`. GitHub installs (recommended) are unaffected: `dsh plugin --profile web add github:v587d/dsh-opencode-go-usage`.
 
 ### From a tarball
 
@@ -65,7 +57,7 @@ dsh plugin --profile web add ./dsh-ocgo-usage-0.1.0.tgz
 ### From a local checkout (development)
 
 ```sh
-git clone https://github.com/v587d/dsh-opencode-go-usage.git
+git clone https://github.com/gaodayihao/dsh-opencode-go-usage.git
 cd dsh-opencode-go-usage
 pnpm install
 pnpm run build
