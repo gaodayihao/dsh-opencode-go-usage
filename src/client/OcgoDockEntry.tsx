@@ -1,23 +1,24 @@
 /**
  * The composer tool-row entry: the OpenCode Go usage readout, mounted in the
  * composer tool row (`conversation.input.right`) next to the model selector.
- * The chip polls the host `/api/ocgo-usage` endpoint for the three usage
- * windows (rolling 5h / weekly / monthly);
+ * While the session's selected model provider is `opencode-go` the chip polls
+ * the host `/api/ocgo-usage` endpoint for the three usage windows
+ * (rolling 5h / weekly / monthly);
  * clicking reveals per-window reset countdowns, a Set editor (masked
  * workspace/cookie) and a manual refresh. In the error state, clicking the
  * chip opens the Set editor directly so a stale credential can be replaced in
- * place.
+ * place. The chip renders nothing for every other provider.
  * @module dsh-ocgo-usage/client/OcgoDockEntry
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import { isOpenCodeGo } from '../provider.ts'
+import { isOpenCodeGo, providerOfModelSelection } from '../provider.ts'
 import type { MaskedConfigView, OcgoUsageView, UsageWindow, UsageWindowKind } from '../types.ts'
 import { NS, type OcgoKey } from './locales.ts'
 import css from './ocgo.module.css'
 
-/** Poll interval for the host snapshot and the live model provider. */
+/** Poll interval for the host snapshot while the chip is shown. */
 const POLL_MS = 10_000
 
 /** The masked-prefix shown before the last-4 tail of a secret. */
@@ -47,11 +48,11 @@ const ocgoApi = {
   ),
 }
 
-/** Composed props of the dock entry (runtime + locale + injected session/provider face). */
+/** Composed props of the dock entry (runtime + locale; the session standard kit,
+ * including the `useProjection` selector, rides `PropsRuntime`). */
 export type OcgoDockEntryProps =
   PropsRuntime<'conversation.input.right'>
   & PropsLocale<typeof NS>
-  & { dockSessionId?: string | undefined; provider?: () => Promise<string | undefined> }
 
 /** Short window label: 5h / wk / mo. */
 const WINDOW_LABELS: Record<UsageWindowKind, string> = {
@@ -99,6 +100,11 @@ function severityClass(window: UsageWindow): string | undefined {
   if (window.percent >= 60) return css.segWarn60
   if (window.percent >= 50) return css.segWarn50
   return undefined
+}
+
+/** Format a window percent for display (keeps one decimal, drops a trailing `.0`). */
+export function formatPercent(percent: number): string {
+  return Number.isInteger(percent) ? String(percent) : percent.toFixed(1)
 }
 
 /** Detect dark mode via DSH body attribute. */
@@ -151,7 +157,7 @@ function WindowSegment(props: { window: UsageWindow; sep: string; compact?: bool
     <span className={css.seg}>
       <span className={css.segSep}>{sep}</span>
       <span className={cls ?? undefined}>
-        {WINDOW_LABELS[window.kind]} {window.percent}%
+        {WINDOW_LABELS[window.kind]} {formatPercent(window.percent)}%
         {!compact ? ` (${formatDuration(window.resetInSec)})` : ''}
       </span>
     </span>
@@ -165,14 +171,14 @@ function maskedText(secret: { set: boolean; tail: string } | undefined): string 
 }
 
 /**
- * The OpenCode Go usage chip: polls the host snapshot, renders the three
- * windows inline, and expands into a detail panel on click.
- * @param props - the composed dock entry props.
+ * The OpenCode Go usage chip: rendered only while the session's selected model
+ * provider is `opencode-go`, polls the host snapshot while shown, renders the
+ * three windows inline, and expands into a detail panel on click.
+ * @param props - the composed dock entry props (including the session kit's `useProjection`).
  */
 export function OcgoDockEntry(props: OcgoDockEntryProps): React.ReactElement | null {
   const [view, setView] = useState<OcgoUsageView | null>(null)
   const [open, setOpen] = useState(false)
-  const [visible, setVisible] = useState(true)
   // Panel mode: 'view' = windows + footer; 'set' = workspace/cookie editor.
   const [mode, setMode] = useState<'view' | 'set'>('view')
   const [config, setConfig] = useState<MaskedConfigView | null>(null)
@@ -186,39 +192,31 @@ export function OcgoDockEntry(props: OcgoDockEntryProps): React.ReactElement | n
   const configRef = useRef<MaskedConfigView | null>(null)
   configRef.current = config
 
-  // One periodic tick:
-  //   1. resolve the session's CURRENT provider from the live in-memory
-  //      selection (session.models, warm ~ms) and toggle `visible`;
-  //   2. only while visible, fetch the usage snapshot.
-  const pollNow = useCallback(() => {
+  // Visibility comes from the session's live model selection, delivered
+  // reactively through the standard kit: the `modelSelection` projection is
+  // updated the moment the user picks a model (pending) or a request consumes
+  // one, so a provider switch re-renders this component immediately.
+  const visible = isOpenCodeGo(providerOfModelSelection(props.useProjection('modelSelection')))
+
+  /** Fetch the host usage snapshot now (manual refresh + interval ticks). */
+  const loadView = useCallback(() => {
     let live = true
-    const provider = props.provider
-    const resolveProvider = provider !== undefined
-      ? Promise.resolve(provider()).then((p) => p ?? undefined, () => undefined)
-      : Promise.resolve(undefined)
-    resolveProvider.then((p) => {
-      if (!live) return
-      const shown = isOpenCodeGo(p)
-      setVisible(shown)
-      if (!shown) setOpen(false)
-      if (shown) {
-        ocgoApi.view().then((snapshot) => {
-          if (live) setView(snapshot)
-        }, () => {
-          if (live) setView(null)
-        })
-      }
+    ocgoApi.view().then((snapshot) => {
+      if (live) setView(snapshot)
     }, () => {
-      if (live) setVisible(false)
+      if (live) setView(null)
     })
     return () => { live = false }
-  }, [props.provider])
+  }, [])
 
+  // While (and only while) the chip is shown: fetch immediately and keep the
+  // snapshot fresh on the poll interval; refresh on tab return.
   useEffect(() => {
-    const cleanup = pollNow()
-    const timer = window.setInterval(pollNow, POLL_MS)
+    if (!visible) return
+    const cleanup = loadView()
+    const timer = window.setInterval(loadView, POLL_MS)
     const onVisibility = (): void => {
-      if (document.visibilityState === 'visible') pollNow()
+      if (document.visibilityState === 'visible') loadView()
     }
     document.addEventListener('visibilitychange', onVisibility)
     return () => {
@@ -226,7 +224,13 @@ export function OcgoDockEntry(props: OcgoDockEntryProps): React.ReactElement | n
       window.clearInterval(timer)
       document.removeEventListener('visibilitychange', onVisibility)
     }
-  }, [pollNow])
+  }, [visible, loadView])
+
+  // Leaving the opencode-go route closes an expanded panel (the chip unmounts
+  // its body anyway; this keeps the state from reopening stale).
+  useEffect(() => {
+    if (!visible) setOpen(false)
+  }, [visible])
 
   /** Load the masked config into the editor drafts. */
   const loadConfig = useCallback(() => {
@@ -261,12 +265,12 @@ export function OcgoDockEntry(props: OcgoDockEntryProps): React.ReactElement | n
       setConfig(snapshot)
       setWsDraft(maskedText(snapshot.workspaceID))
       setCookieDraft(maskedText(snapshot.cookie))
-      // New credentials are live now (host invalidated its cache): poll now.
-      pollNow()
+      // New credentials are live now (host invalidated its cache): reload.
+      loadView()
     }, () => {
       // Ignore; the next poll resyncs and the editor keeps the drafts.
     })
-  }, [pollNow])
+  }, [loadView])
 
   /** Close the panel; in set mode a blur/close acts as confirm (save). */
   const closePanel = useCallback((): void => {
@@ -314,9 +318,9 @@ export function OcgoDockEntry(props: OcgoDockEntryProps): React.ReactElement | n
   const t = props.t
   const sep = ` ${t('ocgo.sep')} `
 
-  // Hidden whenever the live provider is not opencode-go — the pi-ocgo-usage
-  // behaviour: switching to e.g. DeepSeek official hides the chip within one
-  // poll interval, so no other provider's user sees OpenCode Go numbers.
+  // Hidden whenever the session's selected provider is not opencode-go — the
+  // pi-ocgo-usage behaviour: switching to e.g. DeepSeek official hides the chip
+  // on the same render, so no other provider's user sees OpenCode Go numbers.
   if (!visible) return null
 
   const error = view === null ? { code: 'fetch' as const, message: t('ocgo.error', { code: 'fetch' }) }
@@ -461,7 +465,7 @@ export function OcgoDockEntry(props: OcgoDockEntryProps): React.ReactElement | n
                     {w.status === 'rate-limited' ? t('ocgo.rateLimited') : t(WINDOW_TITLE_KEYS[w.kind])}
                   </span>
                   <span className={css.windowValue}>
-                    <span className={severityClass(w) ?? undefined}>{w.percent}%</span>
+                    <span className={severityClass(w) ?? undefined}>{formatPercent(w.percent)}%</span>
                     <span className={css.windowReset}>
                       {t('ocgo.resetsIn', { duration: formatDuration(w.resetInSec) })}
                     </span>

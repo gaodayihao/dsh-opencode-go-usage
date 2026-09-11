@@ -22,7 +22,7 @@ OpenCode Go: 5h 0% (1h 23m) · wk 65% (2d 20h) · mo 83% (6d 21h) · upd 20:15
 - **颜色阈值** —— 正常 → 黄色警告（≥80%）→ 红色错误（≥90% 或已限流）
 - **数据新鲜度** —— `upd HH:MM` 显示最近一次成功抓取时间
 - **轻量轮询** —— 每 10s 轮询（切回标签页立即刷新）；host 端 300s 缓存（TTL 可配）+ 60s 失败冷却，不会频繁打扰 opencode.ai
-- **Provider 感知** —— 仅当会话当前模型走 `opencode-go` provider 时显示；每次轮询读取内存中的实时模型选择（`session.models`，毫秒级），切到 DeepSeek 官方等其它 provider 后一个轮询周期内自动隐藏，切回自动恢复（与 pi-ocgo-usage 行为一致）
+- **Provider 感知** —— 仅当会话当前模型的 provider 显示为 `opencode-go` 时显示；可见性来自 **框架标准席 `useProjection('modelSelection')`**（host 推送的持久模型选择投影），用户在 composer 或 `/model` 里切换 provider 后**同一次渲染**即隐藏/恢复，无需等待下一轮询周期（与 pi-ocgo-usage 行为一致）
 - **点击展开** —— 详情面板显示每个窗口的重置倒计时，左下角 `Set` 可配置凭据，右侧 `refresh upd HH:MM` 手动刷新
 - **内置凭据编辑器** —— 无需碰终端：`Set` 面板直接修改 workspace id 与 cookie（输入框以 `••••` + 末尾 4 位显示，点击外部 / Esc / 保存确认写入）
 - **优雅降级** —— 配置缺失显示 `<err:noconfig>`，HTTP 失败显示 `<err:httpXXX>`；出错时点击 chip 直接进入 Set 面板
@@ -32,7 +32,7 @@ OpenCode Go: 5h 0% (1h 23m) · wk 65% (2d 20h) · mo 83% (6d 21h) · upd 20:15
 
 ## 环境要求
 
-- DeepSeek Harness `0.1.0-rc.6` 或更新（web profile）
+- DeepSeek Harness `0.1.5-rc.1` 或更新（web profile）。`0.1.0-rc.6` 时代的 `session.models` Remote 已在后续版本移除，本插件的 provider 判断改用会话投影（见 [工作原理](#工作原理)）
 - `PATH` 上有 pnpm（`dsh plugin` 需要）
 
 ## 安装
@@ -136,8 +136,8 @@ chmod 600 ~/.dsh/ocgo-usage.json
 
 ## 工作原理
 
-- **Host 半**（`src/index.ts`、`src/service.ts`、`src/api.ts`、`src/routes.ts`）—— 携带 cookie 抓取 `GET /workspace/<wrk>/go`，解析 SSR 渲染的 `data-slot="usage-item"` 块为每个窗口的 `{percent, resetInSec, status}`，缓存结果，通过同源 JSON 端点 `/api/ocgo-usage`（+ `/api/ocgo-usage/refresh`、`/api/ocgo-usage/config`）提供数据。
-- **浏览器半**（`src/client/`）—— 向 `conversation.composer.dock` slot 注册 chip，每 10s 轮询 host 端点，按严重级别着色渲染三个窗口；可见性来自 `session.models` 的实时 provider 判断。
+- **Host 半**（`src/index.ts`、`src/service.ts`、`src/api.ts`、`src/routes.ts`）—— 携带 cookie 抓取 `GET /workspace/<wrk>/go`，从页面中读取用量：优先解析内嵌的服务端数据（`rollingUsage` / `weeklyUsage` / `monthlyUsage` 对象字面量，含小数百分比、精确 `resetInSec`、绝对 `usage`/`limit`，与界面语言和渲染标记无关），找不到时回退到渲染出的 `data-slot="usage-item"` 标记。结果缓存后通过同源 JSON 端点 `/api/ocgo-usage`（+ `/api/ocgo-usage/refresh`、`/api/ocgo-usage/config`）提供数据。
+- **浏览器半**（`src/client/`）—— 通过 `ctx.slots.inject('conversation.input.right', …)` 向 composer 工具行注册 chip（声明延迟注册：slot 由 composer bar 拥有，插件不依赖加载顺序），只在当前会话选中 `opencode-go` 时轮询 host 端点（每 10s），按严重级别着色渲染三个窗口；可见性来自框架标准席 `useProjection('modelSelection')`。
 
 浏览器永远看不到 cookie；抓取与解析全部在 host 侧完成。
 
@@ -152,17 +152,36 @@ chmod 600 ~/.dsh/ocgo-usage.json
 ```sh
 pnpm install
 pnpm run build     # tsc -b && tsdown → lib/
-pnpm run typecheck # tsc -b --pretty false
-pnpm test          # vitest run（解析器 / 配置 / 服务）
+pnpm run typecheck # tsc -b + tsconfig.vitest.json（源码 + 测试）
+pnpm test          # vitest run（解析器 / 配置 / 服务 / provider / chip 渲染）
 ```
 
-构建配置（`shared/tsdown.client.ts`）改编自 [dsh-balance-meter](https://github.com/Ghost011118/dsh-balance-meter)（BSD-3-Clause），后者是官方 DSH `packages/client/tsdown.client.ts` 的副本——它产出 web shell 模块表所需的 `window.__ModuleLoader__.load({id, factory})` 闭包工厂产物。
+`pnpm test` 会加载**构建产物** `lib/client.js`（`src/client/registration.test.ts`）来验证浏览器半的注册契约，因此改代码后先 `pnpm run build` 再跑测试；`src/client/chip.test.tsx` 则直接渲染组件源码，覆盖 provider 可见性开关。
+
+构建配置（`shared/tsdown.client.ts`）改编自 [dsh-balance-meter](https://github.com/Ghost011118/dsh-balance-meter)（BSD-3-Clause），后者是官方 DSH `packages/client/tsdown.client.ts` 的副本——它产出 web shell 模块表所需的 `window.__ModuleLoader__.load({id, factory})` 闭包工厂产物。`shared/web-platform.ts` 的模块清单必须与所装 DSH 的 `packages/client/web/src/platform.ts` 保持一致。
 
 ## License
 
 MIT —— 见 [LICENSE](./LICENSE)。
 
 ## Changelog
+
+### v0.1.2 - 修正用量数值 + 适配 DSH 0.1.5
+
+**🩹 读数修正**：之前的解析器直接从渲染 HTML 里抠数字，而当前控制台把数字包在 Solid 注释标记里、且渲染成整数，导致读数错误（例如滚动/每周窗口解析不出、每月被算成 100% 已限流）。现在改为读取页面内嵌的**服务端原始数据**（`rollingUsage` / `weeklyUsage` / `monthlyUsage`）：
+
+- 保留一位小数的真实百分比（如 `11.4%`、`65.9%`、`42%`），不再取整；
+- `resetInSec` 直接用服务端秒数，不再靠解析「23 天 1 小时」这类文案（该文案的解析此前在中文下会算错）；
+- 新增 `usage` / `limit` 绝对值（JSON 端点同时返回）；
+- 与界面语言无关（不再依赖「滚动用量 / 5 小时用量」这类标签，也不受中英文切换影响）；
+- 渲染标记解析保留为回退路径，并修好了它的正则（小数 + 中文「重置于」文案）。
+
+**🩹 DSH 0.1.5 适配**：DSH 从 `0.1.0-rc.6` 升到 `0.1.5-rc.1` 后插件完全不可见，根因与修复：
+
+- **provider 判断改用会话投影**：旧代码读取 `session.models` Remote 取当前 provider，该 Remote 已从 `dsh-api-session-controller` 移除（现为 `selectModel` / `modelCatalog`）。读取失败被 `catch` 吞掉 → provider 恒为 `undefined` → chip 始终不渲染。现改用框架标准席 `useProjection('modelSelection')`（host 推送的持久模型选择投影），切换 provider 同一次渲染即生效，不再依赖轮询。
+- **slot 注册改为声明延迟**：`ctx.slots.inject('conversation.input.right', …)` 取代 `ctx.inject(['slots','conversation','connection'], …)`，不再假设 slot 已声明，也不再依赖 `connection` 服务形状。
+- **构建对齐**：`shared/web-platform.ts` 模块清单同步到 0.1.5（`dsh-client-store`、`dsh-client-ui-dockkit`；移除已不存在的 `dsh-client-web-react`、`dsh-client-schema-form`）；编译期 SDK 依赖对齐到 `0.1.5-rc.2`。
+- **回归测试**：新增 chip 渲染测试（provider 门控 / 错误态 / 展开）与构建产物注册测试，`pnpm test` 共 72 项。
 
 ### v2.0.0 - 中英双语支持
 

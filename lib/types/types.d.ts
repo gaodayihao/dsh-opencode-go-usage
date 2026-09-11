@@ -10,12 +10,19 @@ export type UsageStatus = 'ok' | 'rate-limited';
 export interface UsageWindow {
     /** Window identity. */
     readonly kind: UsageWindowKind;
-    /** 0–100 integer percent. */
+    /**
+     * 0–100 percent used, one decimal at most (the console reports fractions,
+     * e.g. 11.4). This is the raw `usage / limit` ratio, not a rounded percent.
+     */
     readonly percent: number;
-    /** Seconds until the window resets (coarse estimate from the SSR page). */
+    /** Seconds until the window resets. */
     readonly resetInSec: number;
     /** `rate-limited` when the window is exhausted. */
     readonly status: UsageStatus;
+    /** Absolute usage in the window, when the page payload carried it. */
+    readonly usage?: number;
+    /** Window limit in the same unit as {@link usage}, when the page carried it. */
+    readonly limit?: number;
 }
 /** Normalized usage shape shared by every fetch path. */
 export interface NormalizedUsage {

@@ -22,7 +22,7 @@ OpenCode Go: 5h 0% (1h 23m) · wk 65% (2d 20h) · mo 83% (6d 21h) · upd 20:15
 - **Color thresholds** — muted → warning (≥80%) → error (≥90% or rate-limited)
 - **Data freshness** — `upd HH:MM` shows the last successful fetch time
 - **Lightweight polling** — every 10 s (and on tab refocus); the host caches for 300 s (TTL configurable) with a 60 s failure cooldown, so opencode.ai is never hammered
-- **Provider-aware** — the chip shows only while the session's current model routes through the `opencode-go` provider. Visibility reads the live in-memory model selection (`session.models`, ~ms warm) on every poll, so switching to e.g. DeepSeek official via `/model` hides it within one 10 s cycle and switching back re-shows it (mirrors pi-ocgo-usage)
+- **Provider-aware** — the chip shows only while the session's selected model routes through the `opencode-go` provider. Visibility reads the session's `modelSelection` projection through the framework standard seat `useProjection`, so switching to e.g. DeepSeek official via the composer or `/model` hides it on the same render and switching back re-shows it (mirrors pi-ocgo-usage)
 - **Click to expand** — detail panel with per-window reset countdowns, a `Set` credential editor, and `refresh upd HH:MM`
 - **Built-in credential editor** — no terminal needed: the `Set` panel edits workspace id and cookie in place (fields show `••••` + last 4 chars; click outside / Esc / Save confirms the write)
 - **Graceful degradation** — missing config shows `<err:noconfig>`, HTTP failures `<err:httpXXX>`; on error, clicking the chip opens the Set editor directly
@@ -32,7 +32,7 @@ OpenCode Go: 5h 0% (1h 23m) · wk 65% (2d 20h) · mo 83% (6d 21h) · upd 20:15
 
 ## Requirements
 
-- DeepSeek Harness `0.1.0-rc.6` or newer (web profile)
+- DeepSeek Harness `0.1.5-rc.1` or newer (web profile). The `0.1.0-rc.6`-era `session.models` Remote this plugin used to read was removed in a later release; provider detection now rides the session projection (see [How it works](#how-it-works))
 - pnpm on `PATH` (for `dsh plugin`)
 
 ## Installation
@@ -136,8 +136,8 @@ Click the chip to expand the detail panel: each window shows its full name, perc
 
 ## How it works
 
-- **Host half** (`src/index.ts`, `src/service.ts`, `src/api.ts`, `src/routes.ts`) — fetches `GET /workspace/<wrk>/go` with the cookie, parses the SSR-rendered `data-slot="usage-item"` blocks into `{percent, resetInSec, status}` per window, caches the result, and serves it as same-origin JSON at `/api/ocgo-usage` (+ `/api/ocgo-usage/refresh`, `/api/ocgo-usage/config`).
-- **Browser half** (`src/client/`) — registers a chip into the `conversation.composer.dock` slot, polls the host endpoints every 10 s, and renders the three windows with severity colors; visibility comes from the live provider in `session.models`.
+- **Host half** (`src/index.ts`, `src/service.ts`, `src/api.ts`, `src/routes.ts`) — fetches `GET /workspace/<wrk>/go` with the cookie and reads usage out of the page: the embedded server payload (`rollingUsage` / `weeklyUsage` / `monthlyUsage` object literals — fractional percents, exact `resetInSec`, absolute `usage`/`limit`, independent of the UI language and of the rendered markup) is preferred, with the rendered `data-slot="usage-item"` markup as the fallback. The result is cached and served as same-origin JSON at `/api/ocgo-usage` (+ `/api/ocgo-usage/refresh`, `/api/ocgo-usage/config`).
+- **Browser half** (`src/client/`) — registers a chip into the composer tool row via `ctx.slots.inject('conversation.input.right', …)` (declaration-deferred: the composer bar owns the slot, so the plugin needs no load-order dependency), polls the host endpoints every 10 s while — and only while — the session selects `opencode-go`, and renders the three windows with severity colors; visibility comes from the framework standard seat `useProjection('modelSelection')`.
 
 The browser never sees the cookie; all fetching and parsing happen on the host.
 
@@ -152,11 +152,32 @@ The browser never sees the cookie; all fetching and parsing happen on the host.
 ```sh
 pnpm install
 pnpm run build     # tsc -b && tsdown → lib/
-pnpm run typecheck # tsc -b --pretty false
-pnpm test          # vitest run (parser / config / service)
+pnpm run typecheck # tsc -b + tsconfig.vitest.json (sources + tests)
+pnpm test          # vitest run (parser / config / service / provider / chip render)
 ```
 
-The build config (`shared/tsdown.client.ts`) is adapted from [dsh-balance-meter](https://github.com/Ghost011118/dsh-balance-meter) (BSD-3-Clause), itself a copy of the official DSH `packages/client/tsdown.client.ts` — it emits the `window.__ModuleLoader__.load({id, factory})` closure-factory artifact the web shell's module table consumes.
+`pnpm test` loads the **built** `lib/client.js` (`src/client/registration.test.ts`) to check the browser half's registration contract, so run `pnpm run build` before `pnpm test` after a source change; `src/client/chip.test.tsx` renders the component source directly and covers the provider gate.
+
+The build config (`shared/tsdown.client.ts`) is adapted from [dsh-balance-meter](https://github.com/Ghost011118/dsh-balance-meter) (BSD-3-Clause), itself a copy of the official DSH `packages/client/tsdown.client.ts` — it emits the `window.__ModuleLoader__.load({id, factory})` closure-factory artifact the web shell's module table consumes. `shared/web-platform.ts` must stay in sync with the installed DSH's `packages/client/web/src/platform.ts`.
+
+## Changelog
+
+### v0.1.2 — Correct usage values + DSH 0.1.5 compatibility
+
+**Usage readout fixed**: the old parser scraped the rendered HTML, where the numbers are wrapped in Solid comment markers and rendered as integers — so the readings were wrong (rolling/weekly failed to parse and monthly came out as a bogus 100% rate-limited). The host now reads the page's **embedded server payload** (`rollingUsage` / `weeklyUsage` / `monthlyUsage`):
+
+- real fractional percents (`11.4%`, `65.9%`, `42%`) instead of rounded integers;
+- `resetInSec` taken straight from the server instead of parsed from copy like "23 天 1 小时" (that phrase parsing also mis-computed zh durations);
+- the absolute `usage` / `limit` values are now carried through the JSON endpoint;
+- UI-language independent (no reliance on "滚动用量" / "5 小时用量" labels);
+- the rendered-markup path stays as a fallback, with its regexes fixed (decimals + the zh `重置于` phrasing).
+
+**DSH 0.1.5 compatibility**: after DSH moved from `0.1.0-rc.6` to `0.1.5-rc.1` the chip vanished entirely.
+
+- **Provider gate moved to the session projection**: the old code read the `session.models` Remote for the current provider. That Remote no longer exists on `dsh-api-session-controller` (it is now `selectModel` / `modelCatalog`), so the read threw, the `catch` swallowed it, the provider stayed `undefined`, and the chip never rendered. The chip now reads the framework standard seat `useProjection('modelSelection')` (the durable model-selection projection the host pushes), so a provider switch takes effect on the same render instead of the next poll.
+- **Slot registration is declaration-deferred**: `ctx.slots.inject('conversation.input.right', …)` replaces `ctx.inject(['slots','conversation','connection'], …)` — no assumption that the slot already exists, and no dependency on the `connection` service shape.
+- **Build aligned**: `shared/web-platform.ts` synced to 0.1.5 (`dsh-client-store`, `dsh-client-ui-dockkit` in; the removed `dsh-client-web-react` / `dsh-client-schema-form` out); compile-time SDK deps pinned to `0.1.5-rc.2`.
+- **Regression tests**: chip render tests (provider gate, error state, expand) plus a built-artifact registration test — 72 tests total.
 
 ## License
 

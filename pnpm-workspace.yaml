@@ -61,3 +61,23 @@ minimumReleaseAgeExclude:
   - '@deepseek-ai/dsh-user-questions@0.1.0-rc.6'
   - '@deepseek-ai/dsh-workspace@0.1.0-rc.6'
   - '@deepseek-ai/schemastery@3.18.1'
+  - '@deepseek-ai/dsh-brand@0.1.5-rc.2'
+  - '@deepseek-ai/dsh-api-session-controller@0.1.5-rc.2'
+  - '@deepseek-ai/dsh-client-connection@0.1.5-rc.2'
+  - '@deepseek-ai/dsh-client-locale@0.1.5-rc.2'
+  - '@deepseek-ai/dsh-client-runtime@0.1.1-rc.2'
+  - '@deepseek-ai/dsh-client-ui-conversation@0.1.5-rc.2'
+  - '@deepseek-ai/dsh-client-ui-session@0.1.5-rc.2'
+  - '@deepseek-ai/dsh-client-ui-slots@0.1.5-rc.2'
+  - '@deepseek-ai/dsh-credentials@0.1.5-rc.2'
+  - '@deepseek-ai/dsh-host-webserver@0.1.5-rc.2'
+  - '@deepseek-ai/dsh-sandbox@0.1.5-rc.2'
+
+# The published rc.2 client packages declare caret/`>=` ranges over their
+# internal DSH dependencies, and npm's `latest` dist-tag for those internal
+# packages is still an older prerelease — so the ranges cannot resolve without
+# an explicit pin. These entries only affect THIS repository's dev install (the
+# type-only SDK packages used to compile the plugin); the shipped runtime
+# resolves every one of them from the dsh profile tree.
+overrides:
+  '@deepseek-ai/dsh-sandbox': '0.1.5-rc.2'

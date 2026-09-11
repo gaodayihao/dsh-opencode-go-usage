@@ -1,12 +1,17 @@
 /**
  * HTTP fetch + response adapters for dsh-ocgo-usage
  *
- * Cookie path (current): GET /workspace/<wrk>/go HTML SSR scrape.
- * The opencode.ai dashboard renders usage values inline in
- * `data-slot="usage-item"` blocks; this is the only cookie-authenticated
- * way to read usage today. (The proposed official API from
- * anomalyco/opencode#16513 is not merged yet; when it ships, an apikey
- * path can be added behind the same `NormalizedUsage` shape.)
+ * Cookie path (current): GET /workspace/<wrk>/go and read the usage numbers out
+ * of the served page. The page both renders the numbers (SolidStart
+ * `data-slot="usage-*"` markup) and embeds the raw server-function payload that
+ * produced them (`rollingUsage / weeklyUsage / monthlyUsage` object literals).
+ * The embedded payload is the authoritative source: it carries fractional
+ * percents, exact `resetInSec`, the absolute usage/limit, and is independent of
+ * the UI locale and of the rendered markup's comment wrapping. The rendered
+ * markup is kept as a fallback for a page that stops embedding the payload.
+ * (The proposed official API from anomalyco/opencode#16513 is not merged yet;
+ * when it ships, an apikey path can be added behind the same `NormalizedUsage`
+ * shape.)
  *
  * Adapted from pi-ocgo-usage/src/api.ts.
  * @module dsh-ocgo-usage/api
@@ -21,11 +26,16 @@ export declare class UsageError extends Error {
 /** Fetch usage through the cookie path. Throws UsageError on any failure. */
 export declare function fetchViaCookie(cfg: OcgoConfig): Promise<Omit<NormalizedUsage, 'updatedAt'>>;
 /**
- * Parse the opencode console SSR HTML page and extract the three usage
- * windows. Reset times are emitted as English phrases inside
- * `data-slot="reset-time"` (e.g. "Resets in 2 hours 29 minutes"). We parse
- * them into a coarse `resetInSec` estimate; precise second-level resets are
- * not needed for display.
+ * Parse the opencode console usage page and extract the three usage windows.
+ *
+ * Order of preference:
+ *  1. the embedded server payload (`rollingUsage` / `weeklyUsage` /
+ *     `monthlyUsage`) — authoritative values, exact reset seconds, absolute
+ *     usage/limit, independent of the UI locale;
+ *  2. the rendered `data-slot="usage-item"` markup, with reset phrases parsed
+ *     into a coarse `resetInSec` estimate.
+ * @param html - the served page body.
+ * @returns the windows found on the page.
  */
 export declare function fromSSRHTML(html: string): Omit<NormalizedUsage, 'updatedAt'>;
 /**

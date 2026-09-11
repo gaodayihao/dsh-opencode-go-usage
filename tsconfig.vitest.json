@@ -1,4 +1,8 @@
 {
+  // Type-checks the test sources plus the client sources they exercise. The
+  // declaration merges the client files import (SlotMap, the Session standard
+  // kit, the locale namespace) are program-wide, so the client entry must be in
+  // this program too. Run through `pnpm run typecheck` — not a build input.
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "composite": false,
@@ -7,5 +11,5 @@
     "noEmit": true,
     "rootDir": "."
   },
-  "include": ["src/**/*.test.ts", "src/**/*.spec.ts"]
+  "include": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/**/*.spec.ts", "src/**/*.d.ts", "src/client/**/*.ts", "src/client/**/*.tsx"]
 }
