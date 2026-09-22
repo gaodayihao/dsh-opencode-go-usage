@@ -167,6 +167,12 @@ The build config (`shared/tsdown.client.ts`) is adapted from [dsh-balance-meter]
 
 ## Changelog
 
+### v0.2.1 — Detail panel no longer wraps
+
+- **The panel sizes to its content**: it was pinned at `min-width: 220px`, too narrow for one window row (`5h Rolling · 2.1% · $0.25 / $12.00 · resets in 4h 30m`), so both the label and the countdown broke onto a second line. It is now `width: max-content` (floor 240px, cap `min(92vw, 420px)`) and each row is `white-space: nowrap`, so the label, percent and spend/countdown stay on one line.
+- **The panel is right-aligned and grows leftward**: the chip sits at the right end of the composer row, so a centred popup wide enough for a full row ran off the right edge of the window. The panel's right edge now tracks the chip. The credential editor takes a definite `width: 300px` so its long hint text keeps wrapping instead of stretching the max-content box.
+- **Footer buttons keep their label**: `Set` / `Refresh` / `Save` are `flex: none; white-space: nowrap` and the long hint is `flex: 1 1 auto; min-width: 0`. `Save` used to be squeezed by the hint into a stacked "保 / 存".
+
 ### v0.2.0 — Console rebuild: switch to the Go subscription API
 
 **🔴 Urgent fix**: opencode.ai rebuilt its console as a **client-side SPA** around 2026-09. `GET /console/wrk_.../go` no longer server-renders any numbers (it is now a 1.4 KB `<div id="app">` shell), so the old page-scraping release could not read usage at all — the chip only ever showed an error. The plugin now calls the JSON API the console itself uses:

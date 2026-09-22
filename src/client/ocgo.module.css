@@ -77,13 +77,21 @@
 .details {
   position: absolute;
   bottom: calc(100% + 6px);
-  left: 50%;
-  transform: translateX(-50%);
+  /* Anchor the panel's right edge to the chip and let it grow leftward. The
+     chip sits at the right end of the composer row, so a centred popup wide
+     enough for one full "$0.25 / $12.00 · 剩余 4h 30m" row would run off the
+     right edge of the window. */
+  right: 0;
   z-index: 40;
   display: flex;
   flex-direction: column;
   gap: 6px;
-  min-width: 220px;
+  /* Size to the widest row so nothing has to wrap, capped on narrow viewports.
+     The credential editor sets its own definite width (see .setPanel), so the
+     max-content pass here is driven by the usage rows in view mode. */
+  width: max-content;
+  min-width: 240px;
+  max-width: min(92vw, 420px);
   padding: 8px 10px;
   border: 1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.1));
   border-radius: 8px;
@@ -98,6 +106,9 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  /* One line per window: the label, the percent and the spend/countdown are a
+     single unit, so neither "5h 滚动" nor "剩余 4h 30m" may break. */
+  white-space: nowrap;
 }
 
 .windowLabel {
@@ -146,6 +157,9 @@
   font-size: 11px;
   cursor: pointer;
   padding: 0;
+  /* Buttons keep their label on one line; the flexible hint beside them wraps. */
+  flex: none;
+  white-space: nowrap;
 }
 
 .setBtn:hover {
@@ -154,6 +168,7 @@
 
 .fetchedAt {
   opacity: 0.6;
+  white-space: nowrap;
 }
 
 .refreshBtn {
@@ -163,18 +178,22 @@
   font-size: 11px;
   cursor: pointer;
   padding: 0;
+  flex: none;
+  white-space: nowrap;
 }
 
 .refreshBtn:hover {
   text-decoration: underline;
 }
 
-/* The Set editor panel. */
+/* The Set editor panel. A definite width (rather than min-width) keeps it from
+   stretching the max-content .details box to the length of .setHint, and gives
+   the 100%-wide inputs a stable basis. */
 .setPanel {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  min-width: 260px;
+  width: 300px;
 }
 
 .field {
@@ -211,6 +230,10 @@
 .setHint {
   opacity: 0.55;
   font-size: 11px;
+  /* Takes the leftover width and wraps; `min-width: 0` lets it shrink below its
+     content width instead of squeezing the Save button. */
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .errorText {
