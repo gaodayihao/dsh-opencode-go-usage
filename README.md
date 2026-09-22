@@ -13,22 +13,31 @@
 它是 [pi-ocgo-usage](https://github.com/v587d/pi-ocgo-usage)（Pi 插件）的 Web 对应物：三个用量窗口（5h 滚动 / 每周 / 每月）的百分比与重置倒计时，按阈值变色，让你在窗口耗尽、请求被限流之前就发现。
 
 ```
-OpenCode Go: 5h 0% (1h 23m) · wk 65% (2d 20h) · mo 83% (6d 21h) · upd 20:15
+OpenCode Go: 5h 0% · wk 0% · mo 95%
+```
+
+点开详情面板还会显示每个窗口的绝对金额（Go 的用量额度现在以**美元**计）：
+
+```
+5h Rolling   0.0%   $0.00 / $12.00 · resets in 0s
+Weekly       0.0%   $0.00 / $30.00 · resets in 5d 21h
+Monthly     94.7%   $56.84 / $60.00 · resets in 7d 0h
 ```
 
 ## 特性
 
 - **三个窗口** —— 5h 滚动 / 每周 / 每月 的百分比 + 重置倒计时
+- **美元额度** —— Go 的额度是金额上限（$12 / $30 / $60），详情面板显示 `$已用 / $上限`，比单看百分比更直观
 - **颜色阈值** —— 正常 → 黄色警告（≥80%）→ 红色错误（≥90% 或已限流）
-- **数据新鲜度** —— `upd HH:MM` 显示最近一次成功抓取时间
+- **数据新鲜度** —— `upd HH:MM` 显示最近一次成功抓取时间；倒计时按绝对重置时间实时重算，不受 host 缓存影响
 - **轻量轮询** —— 每 10s 轮询（切回标签页立即刷新）；host 端 300s 缓存（TTL 可配）+ 60s 失败冷却，不会频繁打扰 opencode.ai
 - **Provider 感知** —— 仅当会话当前模型的 provider 显示为 `opencode-go` 时显示；可见性来自 **框架标准席 `useProjection('modelSelection')`**（host 推送的持久模型选择投影），用户在 composer 或 `/model` 里切换 provider 后**同一次渲染**即隐藏/恢复，无需等待下一轮询周期（与 pi-ocgo-usage 行为一致）
-- **点击展开** —— 详情面板显示每个窗口的重置倒计时，左下角 `Set` 可配置凭据，右侧 `refresh upd HH:MM` 手动刷新
+- **点击展开** —— 详情面板显示每个窗口的金额、重置倒计时，左下角 `Set` 可配置凭据，右侧 `refresh upd HH:MM` 手动刷新
 - **内置凭据编辑器** —— 无需碰终端：`Set` 面板直接修改 workspace id 与 cookie（输入框以 `••••` + 末尾 4 位显示，点击外部 / Esc / 保存确认写入）
-- **优雅降级** —— 配置缺失显示 `<err:noconfig>`，HTTP 失败显示 `<err:httpXXX>`；出错时点击 chip 直接进入 Set 面板
+- **优雅降级** —— 配置缺失显示 `<err:noconfig>`，会话过期显示 `<err:unauthorized>`，其它 HTTP 失败显示 `<err:httpXXX>`；出错时点击 chip 直接进入 Set 面板
 - **Cookie 只在 host 侧** —— 浏览器只访问同源 `/api/ocgo-usage` JSON 端点，cookie 永不进入页面
 
-> **⚠️ 需要 OpenCode Go 会话 cookie。** 该 cookie 是完整用户会话（不是 API key），可访问你 OpenCode 账户的全部内容。请像对待密码一样对待它——见 [配置](#配置)。
+> **⚠️ 需要 OpenCode Go 控制台会话 cookie。** 该 cookie 是完整用户会话（不是 API key），可访问你 OpenCode 账户的全部内容。请像对待密码一样对待它——见 [配置](#配置)。
 
 ## 环境要求
 
@@ -81,9 +90,11 @@ dsh --profile web --dump-config   # 应显示 "# == dsh-ocgo-usage" 层
 ### 方式二：环境变量（与 pi-ocgo-usage 同名）
 
 ```sh
-export OPENCODE_GO_COOKIE="auth=Fe26.2*...; oc_locale=en"
+export OPENCODE_GO_COOKIE="__Host-console_session=st_...; auth=Fe26.2*...; oc_locale=en"
 export OPENCODE_GO_WORKSPACE_ID="wrk_01XXXXXXXXXXXXXXXXXXXXXXXX"
 ```
+
+> **必须包含 `__Host-console_session`。** 控制台 API 只认这个会话 cookie；单给 `auth=` 会返回 `401`。最省事的做法是**整条粘贴**浏览器里 opencode.ai 的 cookie——`oc_locale`、`__stripe_*` 等无关项会被自动丢弃。只粘贴裸的 `st_...` 会话值也行（会自动补上 `__Host-console_session=`）。
 
 ### 方式三：配置文件
 
@@ -91,7 +102,7 @@ export OPENCODE_GO_WORKSPACE_ID="wrk_01XXXXXXXXXXXXXXXXXXXXXXXX"
 
 ```jsonc
 {
-  "cookie": "auth=Fe26.2*...; oc_locale=en",
+  "cookie": "__Host-console_session=st_...; auth=Fe26.2*...",
   "workspaceID": "wrk_01XXXXXXXXXXXXXXXXXXXXXXXX"
 }
 ```
@@ -106,7 +117,7 @@ chmod 600 ~/.dsh/ocgo-usage.json
 
 | 环境变量 | 默认值 | 说明 |
 |---|---|---|
-| `OPENCODE_GO_BASE_URL` | `https://opencode.ai` | API 基础地址 |
+| `OPENCODE_GO_BASE_URL` | `https://opencode.ai` | 控制台站点源（API 路径 `/console/api/go/status` 由插件拼接） |
 | `OPENCODE_GO_CACHE_TTL` | `300` | host 缓存秒数，范围 60–3600 |
 | `OPENCODE_GO_TIMEOUT_MS` | `10000` | HTTP 超时 |
 
@@ -118,25 +129,27 @@ chmod 600 ~/.dsh/ocgo-usage.json
     enabled: false    # 总开关，默认 true
 ```
 
-> **Cookie 过期：** `auth` cookie 签发后有效期 1 年。过期（或被吊销）后页面 302 跳转到登录页，chip 显示 `<err:http302>` 而非过期数字。重新登录 opencode.ai 后，通过 Set 面板更新 cookie 即可。
+> **Cookie 过期：** 控制台会话 cookie 过期（或退出登录）后 API 返回 `401`，chip 显示 `<err:unauthorized>` 而非过期数字。重新登录 opencode.ai 后，通过 Set 面板粘贴新的整条 cookie 即可。
 
 ## 使用
 
-点击 chip 展开详情面板：每个窗口显示完整名称、百分比与重置倒计时；右下角 `refresh upd HH:MM` 手动刷新并显示数据时间。
+点击 chip 展开详情面板：每个窗口显示完整名称、百分比、`$已用 / $上限` 与重置倒计时；右下角 `refresh upd HH:MM` 手动刷新并显示数据时间。
 
 ![Usage detail](assets/usage-detail.png)
 
 ## 工作原理
 
-- **Host 半**（`src/index.ts`、`src/service.ts`、`src/api.ts`、`src/routes.ts`）—— 携带 cookie 抓取 `GET /workspace/<wrk>/go`，从页面中读取用量：优先解析内嵌的服务端数据（`rollingUsage` / `weeklyUsage` / `monthlyUsage` 对象字面量，含小数百分比、精确 `resetInSec`、绝对 `usage`/`limit`，与界面语言和渲染标记无关），找不到时回退到渲染出的 `data-slot="usage-item"` 标记。结果缓存后通过同源 JSON 端点 `/api/ocgo-usage`（+ `/api/ocgo-usage/refresh`、`/api/ocgo-usage/config`）提供数据。
+- **Host 半**（`src/index.ts`、`src/service.ts`、`src/api.ts`、`src/routes.ts`）—— 携带 cookie 与 `x-org-id: <wrk_…>` 请求头调用控制台的 `GET /console/api/go/status`，把返回的三个金额计量表（`fiveHour` / `week` / `month`，单位 microcents，1e-8 美元）映射成 5h / 每周 / 每月窗口：百分比 = `used / limit`，倒计时来自 `resetsAt`（每月窗口用订阅周期的 `access.endsAt`，与官方控制台自身的算法一致）。结果缓存后通过同源 JSON 端点 `/api/ocgo-usage`（+ `/api/ocgo-usage/refresh`、`/api/ocgo-usage/config`）提供数据。
 - **浏览器半**（`src/client/`）—— 通过 `ctx.slots.inject('conversation.input.right', …)` 向 composer 工具行注册 chip（声明延迟注册：slot 由 composer bar 拥有，插件不依赖加载顺序），只在当前会话选中 `opencode-go` 时轮询 host 端点（每 10s），按严重级别着色渲染三个窗口；可见性来自框架标准席 `useProjection('modelSelection')`。
 
 浏览器永远看不到 cookie；抓取与解析全部在 host 侧完成。
 
+> 控制台的 `GET /console/api/usage/*`（token 明细）**不包含** Go 订阅的用量——订阅额度只体现在 `go/status` 的金额计量表里，所以本插件展示的是金额与百分比，而不是 token 数。
+
 ## 安全
 
-- `auth` cookie 是**完整的 OpenCode 用户会话**。任何人拿到它都能访问你账户内的所有 workspace、订阅与账单信息。
-- 插件**绝不**记录 cookie、不把它放进错误信息、不发送给浏览器。
+- 控制台会话 cookie 是**完整的 OpenCode 用户会话**（`__Host-console_session` + `auth`）。任何人拿到它都能访问你账户内的所有 workspace、订阅与账单信息。
+- 插件**绝不**记录 cookie、不把它放进错误信息、不发送给浏览器；也**不**把粘贴内容原样转发——只保留 `__Host-console_session` / `console_session` / `auth` 三个已知名字，其余（`__stripe_*`、UI 偏好等）一律丢弃。
 - 配置编辑器只把新值写入 `$DSH_HOME/ocgo-usage.json`（chmod 600），浏览器始终只看到 `••••` + 末尾 4 位的掩码视图。
 
 ## 开发
@@ -145,7 +158,7 @@ chmod 600 ~/.dsh/ocgo-usage.json
 pnpm install
 pnpm run build     # tsc -b && tsdown → lib/
 pnpm run typecheck # tsc -b + tsconfig.vitest.json（源码 + 测试）
-pnpm test          # vitest run（解析器 / 配置 / 服务 / provider / chip 渲染）
+pnpm test          # vitest run（API 适配 / 配置 / 服务 / provider / chip 渲染）
 ```
 
 `pnpm test` 会加载**构建产物** `lib/client.js`（`src/client/registration.test.ts`）来验证浏览器半的注册契约，因此改代码后先 `pnpm run build` 再跑测试；`src/client/chip.test.tsx` 则直接渲染组件源码，覆盖 provider 可见性开关。
@@ -157,6 +170,24 @@ pnpm test          # vitest run（解析器 / 配置 / 服务 / provider / chip 
 MIT —— 见 [LICENSE](./LICENSE)。
 
 ## Changelog
+
+### v0.2.0 — 适配控制台改版（改用 Go 订阅 API）
+
+**🔴 紧急修复**：opencode.ai 控制台在 2026-09 前后改成了**客户端 SPA**。`GET /console/wrk_.../go` 不再服务端渲染任何数字（现在只是一个 `<div id="app">` 空壳，1.4 KB），旧版本抓页面必然读不到用量 —— chip 只能显示错误。插件改为直接调用控制台自己使用的 JSON API：
+
+```
+GET https://opencode.ai/console/api/go/status
+Cookie: __Host-console_session=st_...; auth=Fe26.2*...
+x-org-id: wrk_01XXXXXXXXXXXXXXXXXXXXXXXX
+```
+
+- **认证方式变了**：API 只认 `__Host-console_session`（`st_...` 会话句柄）；旧的 `auth=Fe26.2*...` 单独使用会返回 **401**。`normalizeCookie` 相应重写：识别 `__Host-console_session` / `console_session` / `auth` 三个名字并稳定排序输出，裸的 `st_...` 自动补前缀，`oc_locale`（页面时代用于切中英文页）不再需要而被丢弃，其余无关 cookie 一律不转发。**旧配置里的 `auth=...; oc_locale=...` 需要重新粘贴整条 cookie。**
+- **额度单位变了**：Go 的用量现在是**金额**上限（实测 $12 / 5h、$30 / 周、$60 / 月），API 用 BigInt 十进制字符串承载 microcents（1e-8 美元）。解析器把 `fiveHour` / `week` / `month` 映射为 5h / 每周 / 每月，百分比 = `used / limit`（保留一位小数），限流判定为 `≥100%`；每月窗口的重置时间取自订阅周期 `access.endsAt`（每月计量表本身没有 `resetsAt`），与官方控制台页面的算法一致。
+- **新增绝对金额**：`UsageWindow.usage` / `limit` 现在携带 microcents，详情面板显示 `$已用 / $上限`。
+- **倒计时不再被缓存冻结**：`UsageWindow` 新增绝对时间 `resetsAt`，浏览器据此实时重算剩余时间，而不是复用 host 缓存（默认 300s）里已经过期的秒数。
+- **更清晰的错误**：`401` → `<err:unauthorized>`（提示重新登录并粘贴新 cookie）、`400` → `<err:badworkspace>`（workspace id 不对）、`404` → `<err:notfound>`（workspace 不存在或没有 Go 订阅）、非 JSON 响应 → `<err:parse>`。
+- **删除失效代码**：SSR 页面解析器（`fromSSRHTML`、`parseDurationToSec` 及内嵌 payload / 渲染标记两条路径）已整体移除——它解析的页面不存在了。导出改为 `fromStatusJSON`、`GO_STATUS_PATH`、`WORKSPACE_HEADER`。
+- **其它**：`tsconfig` 不再把 `*.test.tsx` 的产物打进 `lib/types/`；清理了 `lib/` 里遗留的旧构建分块。`pnpm test` 80 项。
 
 ### v0.1.2 - 修正用量数值 + 适配 DSH 0.1.5
 

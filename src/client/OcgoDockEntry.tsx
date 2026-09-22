@@ -1,10 +1,10 @@
 /**
  * The composer tool-row entry: the OpenCode Go usage readout, mounted in the
- * composer tool row (`conversation.input.right`) next to the model selector.
+ * composer toolbar (`conversation.input.right`) next to the model selector.
  * While the session's selected model provider is `opencode-go` the chip polls
  * the host `/api/ocgo-usage` endpoint for the three usage windows
  * (rolling 5h / weekly / monthly);
- * clicking reveals per-window reset countdowns, a Set editor (masked
+ * clicking reveals per-window spend + reset countdowns, a Set editor (masked
  * workspace/cookie) and a manual refresh. In the error state, clicking the
  * chip opens the Set editor directly so a stale credential can be replaced in
  * place. The chip renders nothing for every other provider.
@@ -14,7 +14,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { isOpenCodeGo, providerOfModelSelection } from '../provider.ts'
-import type { MaskedConfigView, OcgoUsageView, UsageWindow, UsageWindowKind } from '../types.ts'
+import {
+  MICROCENTS_PER_USD,
+  type MaskedConfigView,
+  type OcgoUsageView,
+  type UsageWindow,
+  type UsageWindowKind,
+} from '../types.ts'
 import { NS, type OcgoKey } from './locales.ts'
 import css from './ocgo.module.css'
 
@@ -90,6 +96,55 @@ function formatClock(epochMs: number): string {
   const hh = String(d.getHours()).padStart(2, '0')
   const mm = String(d.getMinutes()).padStart(2, '0')
   return `${hh}:${mm}`
+}
+
+/**
+ * Remaining seconds for one window, preferring the absolute `resetsAt` over the
+ * `resetInSec` the host baked into the snapshot.
+ *
+ * The host caches its read for `cacheTTL` seconds (300 by default), so a
+ * snapshot's `resetInSec` is already stale by the time the panel opens.
+ * `resetsAt` is absolute, so re-deriving the countdown from it keeps the
+ * display honest for the whole cache window.
+ * @param window - the window to measure.
+ * @returns whole seconds until the reset (0 when elapsed or unknown).
+ */
+export function remainingSec(window: UsageWindow): number {
+  if (window.resetsAt !== undefined) {
+    const target = Date.parse(window.resetsAt)
+    if (Number.isFinite(target)) return Math.max(0, Math.ceil((target - Date.now()) / 1000))
+  }
+  return window.resetInSec
+}
+
+/**
+ * Whether a window has a reset to count down to at all.
+ *
+ * A rolling window that has not opened yet reports `resetsAt: null` and 0
+ * seconds, and "resets in 0s" would be misleading noise — the official console
+ * omits the phrase in exactly this case.
+ * @param window - the window to check.
+ * @returns true when a countdown is meaningful.
+ */
+export function hasReset(window: UsageWindow): boolean {
+  return window.resetsAt !== undefined || window.resetInSec > 0
+}
+
+/**
+ * Format a window's absolute spend as `$used / $limit`, or undefined when the
+ * API did not report both sides.
+ *
+ * The Go meters are money-denominated since the subscription API landed, so
+ * this is the number that actually explains the percentage ("94.7%" is only
+ * meaningful next to "$56.84 / $60.00").
+ * @param window - the window to format.
+ * @returns the formatted pair, or undefined.
+ */
+export function formatSpend(window: UsageWindow): string | undefined {
+  if (window.usage === undefined || window.limit === undefined) return undefined
+  const used = (window.usage / MICROCENTS_PER_USD).toFixed(2)
+  const limit = (window.limit / MICROCENTS_PER_USD).toFixed(2)
+  return `$${used} / $${limit}`
 }
 
 /** The severity class of one window (muted → escalating warn → err). */
@@ -361,7 +416,7 @@ export function OcgoDockEntry(props: OcgoDockEntryProps): React.ReactElement | n
                 <input
                   className={css.fieldInput}
                   value={cookieDraft}
-                  placeholder="auth=…"
+                  placeholder="__Host-console_session=…"
                   spellCheck={false}
                   autoComplete="off"
                   onChange={(e) => { setCookieDraft(e.target.value) }}
@@ -443,7 +498,7 @@ export function OcgoDockEntry(props: OcgoDockEntryProps): React.ReactElement | n
                 <input
                   className={css.fieldInput}
                   value={cookieDraft}
-                  placeholder="auth=…"
+                  placeholder="__Host-console_session=…"
                   spellCheck={false}
                   autoComplete="off"
                   onChange={(e) => { setCookieDraft(e.target.value) }}
@@ -459,19 +514,24 @@ export function OcgoDockEntry(props: OcgoDockEntryProps): React.ReactElement | n
             </span>
           ) : (
             <>
-              {windows.map((w) => (
-                <span key={w.kind} className={css.window}>
-                  <span className={css.windowLabel}>
-                    {w.status === 'rate-limited' ? t('ocgo.rateLimited') : t(WINDOW_TITLE_KEYS[w.kind])}
-                  </span>
-                  <span className={css.windowValue}>
-                    <span className={severityClass(w) ?? undefined}>{formatPercent(w.percent)}%</span>
-                    <span className={css.windowReset}>
-                      {t('ocgo.resetsIn', { duration: formatDuration(w.resetInSec) })}
+              {windows.map((w) => {
+                const spend = formatSpend(w)
+                const countdown = hasReset(w)
+                  ? t('ocgo.resetsIn', { duration: formatDuration(remainingSec(w)) })
+                  : ''
+                const detail = [spend, countdown].filter((part) => part !== undefined && part !== '').join(' · ')
+                return (
+                  <span key={w.kind} className={css.window}>
+                    <span className={css.windowLabel}>
+                      {w.status === 'rate-limited' ? t('ocgo.rateLimited') : t(WINDOW_TITLE_KEYS[w.kind])}
+                    </span>
+                    <span className={css.windowValue}>
+                      <span className={severityClass(w) ?? undefined}>{formatPercent(w.percent)}%</span>
+                      {detail === '' ? null : <span className={css.windowReset}>{detail}</span>}
                     </span>
                   </span>
-                </span>
-              ))}
+                )
+              })}
               <span className={css.foot}>
                 <button type="button" className={css.setBtn} onClick={openSet}>
                   {t('ocgo.set')}

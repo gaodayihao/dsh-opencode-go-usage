@@ -37,7 +37,7 @@ import { en, zh, type OcgoKey } from './locales.ts'
 
 export { providerOfModelSelection, OCGO_PROVIDER } from '../provider.ts'
 
-export { OcgoDockEntry, formatDuration } from './OcgoDockEntry.tsx'
+export { OcgoDockEntry, formatDuration, formatPercent, formatSpend, hasReset, remainingSec } from './OcgoDockEntry.tsx'
 export type { OcgoDockEntryProps } from './OcgoDockEntry.tsx'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {

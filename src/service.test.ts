@@ -14,20 +14,29 @@ import { OcgoUsageService } from './service.ts'
 const SAVED_COOKIE = process.env[ENV_COOKIE]
 const SAVED_WORKSPACE = process.env[ENV_WORKSPACE_ID]
 
-/** A realistic SSR page for the mocked fetch. */
-const OK_PAGE = `
-<div data-slot="usage-item">
-  <span data-slot="usage-label">Rolling Usage</span>
-  <span data-slot="usage-value"><!--$-->23<!--/-->%</span>
-  <span data-slot="reset-time"><!--$-->Resets in<!--/-->2 hours<!--/--></span>
-</div>`
+/** A realistic Go status payload for the mocked fetch. */
+const OK_STATUS = JSON.stringify({
+  access: {
+    endsAt: '2026-09-29T02:24:46.000Z',
+    meters: {
+      fiveHour: { resetsAt: null, limitMicroCents: '1200000000', usedMicroCents: '0' },
+      week: { resetsAt: null, limitMicroCents: '3000000000', usedMicroCents: '1500000000' },
+      month: { limitMicroCents: '6000000000', usedMicroCents: '5683871800' },
+    },
+  },
+})
+
+/** Answer the mocked fetch with a JSON body. */
+function jsonResponse(body: string, status = 200): Response {
+  return new Response(body, { status, headers: { 'content-type': 'application/json' } })
+}
 
 describe('OcgoUsageService', () => {
   let ctx: Context
   let tmp: string
 
   beforeEach(() => {
-    process.env[ENV_COOKIE] = 'auth=Fe26.2*test; oc_locale=zh'
+    process.env[ENV_COOKIE] = '__Host-console_session=st_test'
     process.env[ENV_WORKSPACE_ID] = 'wrk_test'
     tmp = mkdtempSync(join(tmpdir(), 'dsh-ocgo-usage-svc-'))
     process.env.DSH_HOME = tmp
@@ -49,36 +58,34 @@ describe('OcgoUsageService', () => {
   })
 
   it('returns the parsed windows on success', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(OK_PAGE, { status: 200, headers: { 'content-type': 'text/html' } }),
-    )
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(OK_STATUS))
     const service = new OcgoUsageService(ctx)
     const view = await service.view()
     expect(view.error).toBeUndefined()
-    expect(view.rolling).toEqual({
-      kind: 'rolling',
-      percent: 23,
-      resetInSec: 7200,
+    expect(view.weekly).toEqual({
+      kind: 'weekly',
+      percent: 50,
+      resetInSec: 0,
       status: 'ok',
+      usage: 1_500_000_000,
+      limit: 3_000_000_000,
     })
+    expect(view.monthly?.percent).toBe(94.7)
+    expect(view.monthly?.resetsAt).toBe('2026-09-29T02:24:46.000Z')
     expect(view.updatedAt).toBeTypeOf('number')
   })
 
   it('deduplicates concurrent view() calls into one fetch', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(OK_PAGE, { status: 200, headers: { 'content-type': 'text/html' } }),
-    )
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(OK_STATUS))
     const service = new OcgoUsageService(ctx)
     const [a, b] = await Promise.all([service.view(), service.view()])
-    expect(a.rolling?.percent).toBe(23)
-    expect(b.rolling?.percent).toBe(23)
+    expect(a.weekly?.percent).toBe(50)
+    expect(b.weekly?.percent).toBe(50)
     expect(fetchSpy).toHaveBeenCalledTimes(1)
   })
 
   it('serves the cached view within the TTL without refetching', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(OK_PAGE, { status: 200, headers: { 'content-type': 'text/html' } }),
-    )
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(OK_STATUS))
     const service = new OcgoUsageService(ctx)
     await service.view()
     await service.view()
@@ -87,16 +94,14 @@ describe('OcgoUsageService', () => {
 
   it('returns a noconfig error when the cookie is missing', async () => {
     delete process.env[ENV_COOKIE]
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(OK_PAGE, { status: 200, headers: { 'content-type': 'text/html' } }),
-    )
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(OK_STATUS))
     const service = new OcgoUsageService(ctx)
     const view = await service.view()
     expect(view.error).toBe('noconfig')
     expect(fetchSpy).not.toHaveBeenCalled()
   })
 
-  it('maps an HTTP failure to an http<status> code and enters cooldown', async () => {
+  it('maps an unnamed HTTP failure to an http<status> code and enters cooldown', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response('boom', { status: 500 }),
     )
@@ -109,10 +114,18 @@ describe('OcgoUsageService', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1)
   })
 
-  it('refresh() bypasses the cache window', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(OK_PAGE, { status: 200, headers: { 'content-type': 'text/html' } }),
+  it('surfaces a rejected session cookie as the named unauthorized error', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      jsonResponse(JSON.stringify({ _tag: 'Unauthorized' }), 401),
     )
+    const service = new OcgoUsageService(ctx)
+    const view = await service.view()
+    expect(view.error).toBe('unauthorized')
+    expect(view.message).toContain('cookie')
+  })
+
+  it('refresh() bypasses the cache window', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(OK_STATUS))
     const service = new OcgoUsageService(ctx)
     await service.view()
     await service.refresh()
@@ -120,9 +133,7 @@ describe('OcgoUsageService', () => {
   })
 
   it('answers disabled when the plugin is switched off', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(OK_PAGE, { status: 200, headers: { 'content-type': 'text/html' } }),
-    )
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(OK_STATUS))
     const service = new OcgoUsageService(ctx, { enabled: false })
     const view = await service.view()
     expect(view.error).toBe('disabled')

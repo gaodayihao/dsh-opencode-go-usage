@@ -3,6 +3,13 @@
 > 分支：`fix/cookie-parse`（rebase 到最新 `origin/main` = `721dfeb`）
 > 日期：2026-08-19（首次），2026-08-19（rebase + 调整）
 > 性质：**只修 cookie 解析错误**；不新增本地化，但兼容已合入的中文解析
+>
+> **⚠️ 2026-09 后续（v0.2.0）**：控制台改成 SPA 后，认证 cookie 从 `auth=` 换成了
+> `__Host-console_session=`，且 `oc_locale` 已无用。本文档描述的是**当时**（页面 SSR
+> 时代）的修复；`normalizeCookie` 现在的规则见 `src/config.ts` 的注释与
+> README 的 Changelog（保留 `__Host-console_session` / `console_session` / `auth`
+> 三个名字，丢弃 `oc_locale` 及其它无关 cookie）。下文第 3 条「保留用户 locale」
+> 已废弃。
 
 ## 背景与决策（更新）
 

@@ -1,22 +1,46 @@
 /**
  * HTTP fetch + response adapters for dsh-ocgo-usage
  *
- * Cookie path (current): GET /workspace/<wrk>/go and read the usage numbers out
- * of the served page. The page both renders the numbers (SolidStart
- * `data-slot="usage-*"` markup) and embeds the raw server-function payload that
- * produced them (`rollingUsage / weeklyUsage / monthlyUsage` object literals).
- * The embedded payload is the authoritative source: it carries fractional
- * percents, exact `resetInSec`, the absolute usage/limit, and is independent of
- * the UI locale and of the rendered markup's comment wrapping. The rendered
- * markup is kept as a fallback for a page that stops embedding the payload.
- * (The proposed official API from anomalyco/opencode#16513 is not merged yet;
- * when it ships, an apikey path can be added behind the same `NormalizedUsage`
- * shape.)
+ * Data path (current): `GET <baseUrl>/console/api/go/status` with the console
+ * session cookie and the `x-org-id: <wrk_…>` workspace header. The console was
+ * rebuilt as a client-side SPA in the 2026-09 console release: the old
+ * `GET /workspace/<wrk>/go` page no longer server-renders the numbers (it is a
+ * bare `<div id="app">` shell that hydrates from this JSON API), so scraping
+ * the page returns nothing at all.
+ *
+ * The status payload carries three money-denominated meters:
+ *
+ * ```jsonc
+ * {
+ *   "access": {
+ *     "endsAt": "2026-09-29T02:24:46.000Z",          // the monthly meter's reset
+ *     "meters": {
+ *       "fiveHour": { "startsAt": null, "resetsAt": null,
+ *                     "limitMicroCents": "1200000000", "usedMicroCents": "0" },
+ *       "week":     { "startsAt": "…", "resetsAt": "…",
+ *                     "limitMicroCents": "3000000000", "usedMicroCents": "0" },
+ *       "month":    { "limitMicroCents": "6000000000",
+ *                     "usedMicroCents": "5683871800" }
+ *     }
+ *   }
+ * }
+ * ```
+ *
+ * Values are BigInt decimal strings in microcents (100,000,000 per US dollar);
+ * `fiveHour.resetsAt` is null until the rolling window opens, and the monthly
+ * meter has no `resetsAt` of its own because the console resets it when the
+ * paid period ends (`access.endsAt`) — the console's own Go page renders
+ * exactly this mapping. `access` is null for a workspace without a Go
+ * subscription, which is a valid "no windows" answer rather than an error.
  *
  * Adapted from pi-ocgo-usage/src/api.ts.
  * @module dsh-ocgo-usage/api
  */
 import type { NormalizedUsage, OcgoConfig } from './types.ts';
+/** Console JSON endpoint carrying the Go subscription meters. */
+export declare const GO_STATUS_PATH = "/console/api/go/status";
+/** Header the console uses to select the workspace for an API call. */
+export declare const WORKSPACE_HEADER = "x-org-id";
 /** Error thrown by the HTTP / parsing layer; carries a short code for the UI. */
 export declare class UsageError extends Error {
     readonly code: string;
@@ -26,35 +50,22 @@ export declare class UsageError extends Error {
 /** Fetch usage through the cookie path. Throws UsageError on any failure. */
 export declare function fetchViaCookie(cfg: OcgoConfig): Promise<Omit<NormalizedUsage, 'updatedAt'>>;
 /**
- * Parse the opencode console usage page and extract the three usage windows.
+ * Parse the Go status payload into the three usage windows.
  *
- * Order of preference:
- *  1. the embedded server payload (`rollingUsage` / `weeklyUsage` /
- *     `monthlyUsage`) — authoritative values, exact reset seconds, absolute
- *     usage/limit, independent of the UI locale;
- *  2. the rendered `data-slot="usage-item"` markup, with reset phrases parsed
- *     into a coarse `resetInSec` estimate.
- * @param html - the served page body.
- * @returns the windows found on the page.
+ * Tolerant by design: this reads a third-party API that has already changed
+ * shape once, so every field is probed rather than assumed — a missing meter,
+ * a null `access`, a numeric instead of string limit, or a bad timestamp all
+ * degrade to "that window is absent" instead of throwing.
+ * @param payload - the decoded JSON body.
+ * @param now - epoch ms used to turn `resetsAt` into `resetInSec`.
+ * @returns the windows the payload carried (empty when there is no subscription).
  */
-export declare function fromSSRHTML(html: string): Omit<NormalizedUsage, 'updatedAt'>;
+export declare function fromStatusJSON(payload: unknown, now?: number): Omit<NormalizedUsage, 'updatedAt'>;
 /**
- * Parse a human duration phrase into seconds. Examples (English plus the
- * Chinese renderings used by the zh locale):
- *   "2 hours 29 minutes" → 8940      "2 小时 29 分钟" → 8940
- *   "45 minutes"          → 2700     "45 分钟"         → 2700
- *   "5 days"              → 432000   "5 天"            → 432000
- *   "30 seconds"          → 30       "30 秒"           → 30
- *   "1 week"              → 604800   "1 周"            → 604800
- *   "1 month"             → 2592000  "1 个月"          → 2592000
- *   "1 year"              → 31536000 "1 年"            → 31536000
- *
- * Returns 0 on unrecognized input.
- */
-export declare function parseDurationToSec(phrase: string): number;
-/**
- * Fetch usage with the current config (cookie path only today) and stamp
- * the fetch timestamp so the UI can show data freshness.
+ * Fetch usage with the current config (cookie path only today) and stamp the
+ * fetch timestamp so the UI can show data freshness.
+ * @param cfg - resolved config.
+ * @returns the three windows plus the fetch time.
  */
 export declare function fetchUsage(cfg: OcgoConfig): Promise<NormalizedUsage>;
 //# sourceMappingURL=api.d.ts.map

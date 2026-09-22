@@ -4,25 +4,45 @@
  */
 /** One of the three OpenCode Go usage windows. */
 export type UsageWindowKind = 'rolling' | 'weekly' | 'monthly';
+/**
+ * Microcents per US dollar — the unit the console API reports its Go
+ * subscription meters in (100,000,000 microcents = $1).
+ */
+export declare const MICROCENTS_PER_USD = 100000000;
 /** Whether the window is still usable or the account is rate-limited. */
 export type UsageStatus = 'ok' | 'rate-limited';
-/** One usage window: percent used + seconds until reset. */
+/**
+ * One usage window: percent used + seconds until reset.
+ *
+ * Since the console moved to the Go subscription API the windows are
+ * **money-denominated meters**: each one caps a spend amount rather than a
+ * token count. {@link usage} / {@link limit} therefore carry microcents
+ * (1e-8 USD, the unit the console API reports), and {@link percent} is the
+ * `usage / limit` ratio the console itself renders.
+ */
 export interface UsageWindow {
     /** Window identity. */
     readonly kind: UsageWindowKind;
     /**
-     * 0–100 percent used, one decimal at most (the console reports fractions,
-     * e.g. 11.4). This is the raw `usage / limit` ratio, not a rounded percent.
+     * 0–100 percent used, one decimal at most (the meters carry fractional
+     * percentages, e.g. 11.4). This is the raw `usage / limit` ratio, not a
+     * rounded percent.
      */
     readonly percent: number;
-    /** Seconds until the window resets. */
+    /** Seconds until the window resets; 0 when the window has no reset time yet. */
     readonly resetInSec: number;
     /** `rate-limited` when the window is exhausted. */
     readonly status: UsageStatus;
-    /** Absolute usage in the window, when the page payload carried it. */
+    /** Amount consumed in the window, in microcents (1e-8 USD), when reported. */
     readonly usage?: number;
-    /** Window limit in the same unit as {@link usage}, when the page carried it. */
+    /** Window limit in the same unit as {@link usage}, when reported. */
     readonly limit?: number;
+    /**
+     * ISO-8601 timestamp the window resets at, when the API reported one. Kept
+     * alongside {@link resetInSec} so a consumer (or the chip) can re-derive the
+     * countdown from a cached snapshot instead of trusting a stale second count.
+     */
+    readonly resetsAt?: string;
 }
 /** Normalized usage shape shared by every fetch path. */
 export interface NormalizedUsage {
@@ -35,11 +55,14 @@ export interface NormalizedUsage {
 }
 /** Fully resolved plugin configuration (env + config file + defaults). */
 export interface OcgoConfig {
-    /** Full `Cookie:` header value (e.g. `auth=Fe26.2*...; oc_locale=zh`). */
+    /**
+     * Full `Cookie:` header value for the opencode console, e.g.
+     * `__Host-console_session=st_…; auth=Fe26.2*…`.
+     */
     readonly cookie?: string;
-    /** OpenCode workspace id (e.g. `wrk_01...`). */
+    /** OpenCode workspace id (e.g. `wrk_01...`), sent as the `x-org-id` header. */
     readonly workspaceID?: string;
-    /** API base URL. */
+    /** Origin of the opencode console (the API path is appended). */
     readonly baseUrl: string;
     /** Cache TTL in seconds, clamped to [60, 3600]. */
     readonly cacheTTL: number;

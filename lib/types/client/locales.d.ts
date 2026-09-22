@@ -8,7 +8,7 @@ export declare const NS = "ocgo";
 export declare const zh: {
     readonly 'ocgo.unavailable': "用量不可用";
     readonly 'ocgo.error': "查询失败：{code}";
-    readonly 'ocgo.noconfig': "未配置：请设置 OPENCODE_GO_COOKIE 与 OPENCODE_GO_WORKSPACE_ID（或 $DSH_HOME/ocgo-usage.json）";
+    readonly 'ocgo.noconfig': "未配置：请设置 OPENCODE_GO_COOKIE（控制台会话 cookie，含 __Host-console_session）与 OPENCODE_GO_WORKSPACE_ID（或 $DSH_HOME/ocgo-usage.json）";
     readonly 'ocgo.refresh': "刷新";
     readonly 'ocgo.fetchedAt': "upd {time}";
     readonly 'ocgo.rolling': "5h 滚动";
@@ -23,13 +23,13 @@ export declare const zh: {
     readonly 'ocgo.save': "保存";
     readonly 'ocgo.workspaceID': "workspace id";
     readonly 'ocgo.cookie': "cookie";
-    readonly 'ocgo.setHint': "点击外部或按 Esc 保存";
+    readonly 'ocgo.setHint': "从 opencode.ai 控制台复制整条 cookie（需含 __Host-console_session）；点击外部或按 Esc 保存";
 };
 /** English copy. */
 export declare const en: {
     readonly 'ocgo.unavailable': "usage unavailable";
     readonly 'ocgo.error': "Query failed: {code}";
-    readonly 'ocgo.noconfig': "Not configured: set OPENCODE_GO_COOKIE and OPENCODE_GO_WORKSPACE_ID (or $DSH_HOME/ocgo-usage.json)";
+    readonly 'ocgo.noconfig': "Not configured: set OPENCODE_GO_COOKIE (the console session cookie, including __Host-console_session) and OPENCODE_GO_WORKSPACE_ID (or $DSH_HOME/ocgo-usage.json)";
     readonly 'ocgo.refresh': "Refresh";
     readonly 'ocgo.fetchedAt': "upd {time}";
     readonly 'ocgo.rolling': "5h Rolling";
@@ -44,7 +44,7 @@ export declare const en: {
     readonly 'ocgo.save': "Save";
     readonly 'ocgo.workspaceID': "workspace id";
     readonly 'ocgo.cookie': "cookie";
-    readonly 'ocgo.setHint': "click outside or press Esc to save";
+    readonly 'ocgo.setHint': "paste the whole opencode.ai console cookie (must include __Host-console_session); click outside or press Esc to save";
 };
 /** Key type of the dictionary (for the LocaleNamespaceMap merge). */
 export type OcgoKey = keyof typeof zh;

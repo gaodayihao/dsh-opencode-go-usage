@@ -1,227 +1,325 @@
 /**
- * Unit tests for the usage page parser.
+ * Unit tests for the Go status API adapter.
+ *
+ * The console used to server-render the numbers into `GET /workspace/<wrk>/go`;
+ * it now ships a client-side SPA that hydrates from
+ * `GET /console/api/go/status`, so these tests pin the JSON contract (meters,
+ * microcents, `x-org-id`, error mapping) rather than any page markup.
  * @module dsh-ocgo-usage/api.test
  */
 
-import { describe, expect, it } from 'vitest'
-import { fromSSRHTML, parseDurationToSec } from './api.ts'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { fetchViaCookie, fromStatusJSON, GO_STATUS_PATH, UsageError, WORKSPACE_HEADER } from './api.ts'
+import type { OcgoConfig } from './types.ts'
 
-/**
- * The embedded server payload exactly as the console emits it (Solid
- * `$R`-indexed object literals, minified keys). The `rollingUsage` key appears
- * twice: first a null declaration, then the populated object — the parser must
- * take the populated one.
- */
-const EMBEDDED_PAYLOAD = `
-<script>;0x0000;</script>
-((self.$R = self.$R || {})["server-fn:3"] = [],
-($R => $R[0] = {
-    mine: !0,
-    useBalance: !0,
-    rollingUsage: null,
-    weeklyUsage: null,
-    monthlyUsage: null
-})($R["server-fn:3"]));
-$R[28]($R[18],$R[31]={mine:!0,useBalance:!0,allowTraining:!1,region:$R[32]=["us","eu","sg","cn"],rollingUsage:$R[33]={status:"ok",resetInSec:13664,usagePercent:11.4,usage:137231893,limit:1200000000},weeklyUsage:$R[34]={status:"ok",resetInSec:232476,usagePercent:65.9,usage:1978004869,limit:3000000000},monthlyUsage:$R[35]={status:"ok",resetInSec:1993562,usagePercent:42,usage:2522359079,limit:6000000000}});
-`
-
-/** One rendered usage-item block in the zh UI, wrapping numbers in comments. */
-function renderedItem(label: string, value: string, reset: string): string {
-  return `<div data-hk="0" data-slot="usage-item"><div data-slot="usage-header">`
-    + `<span data-slot="usage-label">${label}</span>`
-    + `<span data-slot="usage-value"><!--$-->${value}<!--/-->%</span></div>`
-    + `<div data-slot="progress" role="progressbar" aria-valuenow="${value}">`
-    + `<div data-slot="progress-bar" style="width:${value}%"></div></div>`
-    + `<span data-slot="reset-time"><!--$-->重置于<!--/--> <!--$-->${reset}<!--/--></span></div>`
+/** The real payload shape, trimmed to the fields the adapter reads. */
+const STATUS = {
+  subscriberUserId: 'acc_01M13HM528DZ14NP0MQ9VQXHPW',
+  useBalance: true,
+  cancelAtPeriodEnd: false,
+  renewalPending: false,
+  access: {
+    startsAt: '2026-08-29T02:24:46.000Z',
+    endsAt: '2026-09-29T02:24:46.000Z',
+    cancelAtPeriodEnd: false,
+    meters: {
+      fiveHour: {
+        startsAt: null,
+        resetsAt: null,
+        limitMicroCents: '1200000000',
+        usedMicroCents: '0',
+      },
+      week: {
+        startsAt: '2026-09-21T00:00:00.000Z',
+        resetsAt: '2026-09-28T00:00:00.000Z',
+        limitMicroCents: '3000000000',
+        usedMicroCents: '1500000000',
+      },
+      month: {
+        limitMicroCents: '6000000000',
+        usedMicroCents: '5683871800',
+      },
+    },
+  },
 }
 
-/** The rendered markup half of the console page (zh locale). */
-const RENDERED_PAGE = [
-  renderedItem('5 小时用量', '11.4', '3 小时 47 分钟'),
-  renderedItem('每周用量', '65.9', '2 天 16 小时'),
-  renderedItem('每月用量', '42', '23 天 1 小时'),
-].join('\n')
+/** A fixed clock so `resetInSec` is deterministic. */
+const NOW = Date.parse('2026-09-22T00:00:00.000Z')
 
-describe('fromSSRHTML — embedded payload', () => {
-  it('reads the authoritative usage values from the page payload', () => {
-    const parsed = fromSSRHTML(EMBEDDED_PAYLOAD)
+function config(overrides: Partial<OcgoConfig> = {}): OcgoConfig {
+  return {
+    cookie: '__Host-console_session=st_test',
+    workspaceID: 'wrk_01M13HM69T4HK5M026TQEZ33KN',
+    baseUrl: 'https://opencode.ai',
+    cacheTTL: 300,
+    timeoutMs: 10_000,
+    ...overrides,
+  }
+}
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
+
+describe('fromStatusJSON', () => {
+  it('maps the three meters onto rolling / weekly / monthly', () => {
+    const parsed = fromStatusJSON(STATUS, NOW)
     expect(parsed.rolling).toEqual({
       kind: 'rolling',
-      percent: 11.4,
-      resetInSec: 13664,
+      percent: 0,
+      resetInSec: 0,
       status: 'ok',
-      usage: 137231893,
-      limit: 1200000000,
+      usage: 0,
+      limit: 1_200_000_000,
     })
     expect(parsed.weekly).toEqual({
       kind: 'weekly',
-      percent: 65.9,
-      resetInSec: 232476,
+      percent: 50,
+      resetInSec: 6 * 86400,
       status: 'ok',
-      usage: 1978004869,
-      limit: 3000000000,
+      usage: 1_500_000_000,
+      limit: 3_000_000_000,
+      resetsAt: '2026-09-28T00:00:00.000Z',
     })
+    // The monthly meter has no resetsAt of its own: the console resets it when
+    // the paid period ends, so it borrows access.endsAt.
     expect(parsed.monthly).toEqual({
       kind: 'monthly',
-      percent: 42,
-      resetInSec: 1993562,
+      percent: 94.7,
+      resetInSec: 7 * 86400 + 2 * 3600 + 24 * 60 + 46,
       status: 'ok',
-      usage: 2522359079,
-      limit: 6000000000,
+      usage: 5_683_871_800,
+      limit: 6_000_000_000,
+      resetsAt: '2026-09-29T02:24:46.000Z',
     })
   })
 
-  it('skips the null declaration that precedes the populated payload', () => {
-    // Regression: a naive "first match wins" scan reads the null declaration
-    // and reports an empty page.
-    const parsed = fromSSRHTML(EMBEDDED_PAYLOAD)
-    expect(parsed.rolling?.percent).not.toBe(0)
-    expect(parsed.weekly?.percent).toBe(65.9)
-  })
-
-  it('prefers the payload over the rendered (rounded) markup', () => {
-    const parsed = fromSSRHTML(`${RENDERED_PAGE}\n${EMBEDDED_PAYLOAD}`)
+  it('keeps one decimal on a fractional percentage', () => {
+    // 137231893 / 1200000000 = 11.436% → 11.4, matching the console's own read.
+    const parsed = fromStatusJSON({
+      access: {
+        endsAt: '2026-10-01T00:00:00.000Z',
+        meters: {
+          fiveHour: { limitMicroCents: '1200000000', usedMicroCents: '137231893' },
+        },
+      },
+    }, NOW)
     expect(parsed.rolling?.percent).toBe(11.4)
-    expect(parsed.weekly?.percent).toBe(65.9)
-    expect(parsed.monthly?.percent).toBe(42)
-    // Exact seconds come from the payload, not the "23 天 1 小时" phrase.
-    expect(parsed.monthly?.resetInSec).toBe(1993562)
   })
 
-  it('marks an exhausted window rate-limited from the payload status', () => {
-    const page = 'rollingUsage:{status:"rate-limited",resetInSec:10,usagePercent:100,usage:10,limit:10},'
-    expect(fromSSRHTML(page).rolling).toEqual({
-      kind: 'rolling',
-      percent: 100,
-      resetInSec: 10,
-      status: 'rate-limited',
-      usage: 10,
-      limit: 10,
-    })
+  it('marks an exhausted meter rate-limited without exceeding 100%', () => {
+    const parsed = fromStatusJSON({
+      access: {
+        meters: { week: { limitMicroCents: '3000000000', usedMicroCents: '3100000000' } },
+      },
+    }, NOW)
+    expect(parsed.weekly?.status).toBe('rate-limited')
+    expect(parsed.weekly?.percent).toBe(100)
   })
 
-  it('tolerates a payload object with no usage/limit members', () => {
-    const page = 'weeklyUsage:{status:"ok",resetInSec:60,usagePercent:3.5},'
-    expect(fromSSRHTML(page).weekly).toEqual({
-      kind: 'weekly',
-      percent: 3.5,
-      resetInSec: 60,
-      status: 'ok',
-    })
+  it('treats a spent meter that is exactly at its limit as rate-limited', () => {
+    const parsed = fromStatusJSON({
+      access: { meters: { month: { limitMicroCents: '6000000000', usedMicroCents: '6000000000' } } },
+    }, NOW)
+    expect(parsed.monthly?.percent).toBe(100)
+    expect(parsed.monthly?.status).toBe('rate-limited')
   })
 
-  it('tolerates a payload member written as a JS-only shorthand', () => {
-    // The console minifies to unquoted literals; the tolerant reader takes the
-    // numeric member and leaves the unresolvable one out (the payload still
-    // wins over the rendered markup, which is the authoritative order).
-    const page = 'rollingUsage:{status:ok,usagePercent:1},' + renderedItem('5 小时用量', '7', '1 小时')
-    const parsed = fromSSRHTML(page)
-    expect(parsed.rolling?.percent).toBe(1)
-    expect(parsed.rolling?.status).toBe('ok')
+  it('returns no windows when the workspace has no Go subscription', () => {
+    expect(fromStatusJSON({ access: null }, NOW)).toEqual({})
+    expect(fromStatusJSON({}, NOW)).toEqual({})
+    expect(fromStatusJSON(null, NOW)).toEqual({})
+    expect(fromStatusJSON('nope', NOW)).toEqual({})
   })
-})
 
-describe('fromSSRHTML — rendered markup fallback', () => {
-  it('parses the rendered zh page (comment-wrapped values, decimals)', () => {
-    const parsed = fromSSRHTML(RENDERED_PAGE)
-    expect(parsed.rolling).toEqual({
-      kind: 'rolling',
-      percent: 11.4,
-      resetInSec: 3 * 3600 + 47 * 60,
-      status: 'ok',
-    })
+  it('skips a meter the payload did not carry', () => {
+    const parsed = fromStatusJSON({
+      access: { meters: { week: { limitMicroCents: '100', usedMicroCents: '50' } } },
+    }, NOW)
+    expect(parsed.rolling).toBeUndefined()
+    expect(parsed.weekly?.percent).toBe(50)
+    expect(parsed.monthly).toBeUndefined()
+  })
+
+  it('does not divide by a zero or absent limit', () => {
+    const parsed = fromStatusJSON({
+      access: { meters: { week: { limitMicroCents: '0', usedMicroCents: '500' } } },
+    }, NOW)
     expect(parsed.weekly).toEqual({
       kind: 'weekly',
-      percent: 65.9,
-      resetInSec: 2 * 86400 + 16 * 3600,
+      percent: 0,
+      resetInSec: 0,
       status: 'ok',
-    })
-    expect(parsed.monthly).toEqual({
-      kind: 'monthly',
-      percent: 42,
-      resetInSec: 23 * 86400 + 3600,
-      status: 'ok',
+      usage: 500,
+      limit: 0,
     })
   })
 
-  it('parses an en-locale rendered page', () => {
-    const page = [
-      '<div data-slot="usage-item"><span data-slot="usage-label">Rolling Usage</span>',
-      '<span data-slot="usage-value"><!--$-->23<!--/-->%</span>',
-      '<span data-slot="reset-time"><!--$-->Resets in<!--/-->2 hours 29 minutes<!--/--></span></div>',
-      '<div data-slot="usage-item"><span data-slot="usage-label">Weekly Usage</span>',
-      '<span data-slot="usage-value"><!--$-->80<!--/-->%</span>',
-      '<span data-slot="reset-time"><!--$-->Resets in<!--/-->4 days 6 hours<!--/--></span></div>',
-      '<div data-slot="usage-item"><span data-slot="usage-label">Monthly Usage</span>',
-      '<span data-slot="usage-value"><!--$-->100<!--/-->%</span>',
-      '<span data-slot="reset-time"><!--$-->Resets in<!--/-->12 days<!--/--></span></div>',
-    ].join('')
-    const parsed = fromSSRHTML(page)
-    expect(parsed.rolling?.percent).toBe(23)
-    expect(parsed.rolling?.resetInSec).toBe(2 * 3600 + 29 * 60)
-    expect(parsed.weekly?.percent).toBe(80)
-    expect(parsed.monthly).toEqual({
-      kind: 'monthly',
-      percent: 100,
-      resetInSec: 12 * 86400,
-      status: 'rate-limited',
-    })
+  it('accepts numeric members as well as the BigInt decimal strings', () => {
+    const parsed = fromStatusJSON({
+      access: { meters: { week: { limitMicroCents: 1000, usedMicroCents: 250 } } },
+    }, NOW)
+    expect(parsed.weekly?.percent).toBe(25)
   })
 
-  it('accepts the English "滚动用量" alias for rolling', () => {
-    expect(fromSSRHTML(renderedItem('滚动用量', '27', '3 小时 37 分钟')).rolling?.percent).toBe(27)
-  })
-
-  it('omits missing windows (new account / trial outside window)', () => {
-    const parsed = fromSSRHTML(renderedItem('Weekly Usage', '10', '1 day'))
-    expect(parsed.rolling).toBeUndefined()
-    expect(parsed.weekly?.percent).toBe(10)
-    expect(parsed.monthly).toBeUndefined()
-  })
-
-  it('returns an empty result for a login-redirect page', () => {
-    const parsed = fromSSRHTML('<html><title>OpenAuth</title><body>Sign in to continue</body></html>')
-    expect(parsed.rolling).toBeUndefined()
+  it('ignores an unparseable or negative amount instead of reporting NaN', () => {
+    const parsed = fromStatusJSON({
+      access: {
+        meters: {
+          week: { limitMicroCents: 'not-a-number', usedMicroCents: '-5' },
+          month: { limitMicroCents: '100', usedMicroCents: '50' },
+        },
+      },
+    }, NOW)
     expect(parsed.weekly).toBeUndefined()
-    expect(parsed.monthly).toBeUndefined()
+    expect(parsed.monthly?.percent).toBe(50)
   })
 
-  it('ignores unknown usage labels', () => {
-    const parsed = fromSSRHTML(renderedItem('Something Else', '50', '1 hour'))
-    expect(parsed.rolling).toBeUndefined()
-    expect(parsed.weekly).toBeUndefined()
-    expect(parsed.monthly).toBeUndefined()
+  it('clamps an elapsed reset time to zero seconds', () => {
+    const parsed = fromStatusJSON({
+      access: {
+        meters: {
+          week: {
+            resetsAt: '2026-09-01T00:00:00.000Z',
+            limitMicroCents: '100',
+            usedMicroCents: '1',
+          },
+        },
+      },
+    }, NOW)
+    expect(parsed.weekly?.resetInSec).toBe(0)
+    expect(parsed.weekly?.resetsAt).toBe('2026-09-01T00:00:00.000Z')
   })
 
-  it('clamps percent into [0, 100] keeping one decimal', () => {
-    expect(fromSSRHTML(renderedItem('Monthly Usage', '150', '1 day')).monthly?.percent).toBe(100)
-    expect(fromSSRHTML('monthlyUsage:{status:"ok",resetInSec:1,usagePercent:120.44},').monthly?.percent).toBe(100)
+  it('drops a malformed resetsAt rather than producing NaN seconds', () => {
+    const parsed = fromStatusJSON({
+      access: {
+        meters: {
+          week: { resetsAt: 'soon', limitMicroCents: '100', usedMicroCents: '1' },
+        },
+      },
+    }, NOW)
+    expect(parsed.weekly?.resetInSec).toBe(0)
+    expect(parsed.weekly?.resetsAt).toBeUndefined()
+  })
+
+  it('rounds the countdown up, like the console does', () => {
+    const parsed = fromStatusJSON({
+      access: {
+        meters: {
+          week: {
+            resetsAt: new Date(NOW + 1500).toISOString(),
+            limitMicroCents: '100',
+            usedMicroCents: '1',
+          },
+        },
+      },
+    }, NOW)
+    expect(parsed.weekly?.resetInSec).toBe(2)
   })
 })
 
-describe('parseDurationToSec', () => {
-  it.each([
-    ['2 hours 29 minutes', 2 * 3600 + 29 * 60],
-    ['45 minutes', 45 * 60],
-    ['5 days', 5 * 86400],
-    ['30 seconds', 30],
-    ['1 week', 604800],
-    ['1 month', 2592000],
-    ['1 year', 31536000],
-    ['2 小时 29 分钟', 2 * 3600 + 29 * 60],
-    ['45 分钟', 45 * 60],
-    ['5 天', 5 * 86400],
-    ['30 秒', 30],
-    ['1 周', 604800],
-    ['1 个月', 2592000],
-    ['1 年', 31536000],
-    ['', 0],
-    ['garbage text', 0],
-  ])('parses %j → %i', (phrase, expected) => {
-    expect(parseDurationToSec(phrase)).toBe(expected)
+describe('fetchViaCookie', () => {
+  /** Spy fetch and answer with a JSON payload. */
+  function stubFetch(body: unknown, init: ResponseInit = {}): ReturnType<typeof vi.spyOn> {
+    return vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(typeof body === 'string' ? body : JSON.stringify(body), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+        ...init,
+      }),
+    )
+  }
+
+  it('calls the console status endpoint with the cookie and the x-org-id header', async () => {
+    const spy = stubFetch(STATUS)
+    await fetchViaCookie(config())
+    expect(spy).toHaveBeenCalledTimes(1)
+    const [url, request] = spy.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe(`https://opencode.ai${GO_STATUS_PATH}`)
+    const headers = request.headers as Record<string, string>
+    expect(headers.Cookie).toBe('__Host-console_session=st_test')
+    expect(headers[WORKSPACE_HEADER]).toBe('wrk_01M13HM69T4HK5M026TQEZ33KN')
+    expect(request.method).toBe('GET')
   })
 
-  it('handles embedded SolidStart comment markers', () => {
-    expect(parseDurationToSec('2<!--/--> hours 29<!--/--> minutes')).toBe(2 * 3600 + 29 * 60)
+  it('honors a custom base URL (trailing origin only)', async () => {
+    const spy = stubFetch(STATUS)
+    await fetchViaCookie(config({ baseUrl: 'https://console.example.test' }))
+    expect((spy.mock.calls[0] as [string])[0]).toBe(`https://console.example.test${GO_STATUS_PATH}`)
+  })
+
+  it('refuses to fetch without a cookie or workspace', async () => {
+    const spy = stubFetch(STATUS)
+    await expect(fetchViaCookie(config({ cookie: undefined }))).rejects.toMatchObject({ code: 'noconfig' })
+    await expect(fetchViaCookie(config({ workspaceID: '' }))).rejects.toMatchObject({ code: 'noconfig' })
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('maps a rejected session cookie (401) to a named error', async () => {
+    stubFetch({ _tag: 'Unauthorized' }, { status: 401 })
+    const error = await fetchViaCookie(config()).catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(UsageError)
+    expect((error as UsageError).code).toBe('unauthorized')
+    expect((error as UsageError).message).toContain('cookie')
+  })
+
+  it('maps a bad workspace id (400) to a named error', async () => {
+    stubFetch({ _tag: 'BadRequest' }, { status: 400 })
+    await expect(fetchViaCookie(config())).rejects.toMatchObject({ code: 'badworkspace' })
+  })
+
+  it('maps an unknown workspace / missing subscription (404) to a named error', async () => {
+    stubFetch({ _tag: 'NotFound' }, { status: 404 })
+    await expect(fetchViaCookie(config())).rejects.toMatchObject({ code: 'notfound' })
+  })
+
+  it('falls back to http<status> for an unnamed failure', async () => {
+    stubFetch('boom', { status: 503 })
+    await expect(fetchViaCookie(config())).rejects.toMatchObject({ code: 'http503' })
+  })
+
+  it('reports a non-JSON body as a parse error', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('<html>not json</html>', { status: 200, headers: { 'content-type': 'text/html' } }),
+    )
+    await expect(fetchViaCookie(config())).rejects.toMatchObject({ code: 'parse' })
+  })
+
+  it('reports a transport failure as a fetch error', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('socket hang up'))
+    await expect(fetchViaCookie(config())).rejects.toMatchObject({ code: 'fetch' })
+  })
+
+  it('reports a timeout as a timeout error', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((_url, init) => {
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+        })
+      })
+    })
+    await expect(fetchViaCookie(config({ timeoutMs: 5 }))).rejects.toMatchObject({ code: 'timeout' })
+  })
+
+  it('reports a body read that outlives the timeout as a timeout error', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((_url, init) => {
+      // Headers arrive immediately; the body never settles until the abort.
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+          })
+        }),
+      } as unknown as Response)
+    })
+    await expect(fetchViaCookie(config({ timeoutMs: 5 }))).rejects.toMatchObject({ code: 'timeout' })
+  })
+
+  it('answers an empty read (no subscription) without throwing', async () => {
+    stubFetch({ access: null })
+    await expect(fetchViaCookie(config())).resolves.toEqual({})
   })
 })

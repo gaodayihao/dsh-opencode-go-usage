@@ -162,33 +162,46 @@ function pickString(envVal: string | undefined, fileVal: string | undefined): st
 }
 
 /**
+ * Cookie names the console API understands, in the order we emit them.
+ * `__Host-console_session` is the live session; `console_session` is the
+ * non-Host variant the console also reads; `auth` is the legacy iron-session
+ * cookie, kept because the user may paste it alongside the session handle.
+ */
+export const CONSOLE_COOKIE_NAMES = ['__Host-console_session', 'console_session', 'auth'] as const
+
+/** One recognized console cookie name. */
+type ConsoleCookieName = (typeof CONSOLE_COOKIE_NAMES)[number]
+
+/**
  * Normalize a user-provided cookie string into a valid `Cookie:` header value
  * for the opencode console HTTP request.
  *
+ * The console API authenticates on its session cookie. Since the 2026-09
+ * console rebuild the session lives in `__Host-console_session` (a short
+ * `st_…` handle); the older `auth=Fe26.2*…` iron-session cookie alone is
+ * **rejected with HTTP 401** by the API, so a cookie file that kept only
+ * `auth=` (what this function used to produce) now fails outright.
+ *
  * Accepts, order-independently:
- *  1. Full header: "auth=Fe26.2*...; oc_locale=zh"   (passthrough)
- *  2. Single bare value: "Fe26.2*..."                (auto-prefix "auth=")
- *  3. Two-segment value+locale: "Fe26.2*...; oc_locale=zh"
- *  4. Locale + auth in any order (incl. `oc_locale=zh` BEFORE `auth=`).
+ *  1. The browser's full cookie header, e.g.
+ *     `__Host-console_session=st_…; auth=Fe26.2*…; __stripe_mid=…` (passthrough
+ *     of the recognized names, everything else dropped).
+ *  2. Just the session handle: `st_…` → `__Host-console_session=st_…`.
+ *  3. Just the legacy auth value: `Fe26.2*…` → `auth=Fe26.2*…` (kept so an
+ *     older paste still produces a clear HTTP 401 rather than `noconfig`, and
+ *     so the two cookies can be pasted separately).
+ *  4. Comma-separated `Set-Cookie`-style input.
  *
- * The original implementation decided "the first segment is the auth value"
- * whenever the string did not start with `auth=`. That silently corrupted
- * real browser cookies like `oc_locale=zh; desktop_promo_dismissed=1;
- * auth=Fe26.2*...` into `auth=oc_locale=zh; ...` — a fake cookie that
- * opencode.ai rejects with a redirect to the login page.
+ * Historical fix still honored: the `auth=` segment is located anywhere in the
+ * string rather than assumed to be first. The old code turned
+ * `oc_locale=zh; …; auth=Fe26.2*…` into `auth=oc_locale=zh; …` — a fabricated
+ * cookie the site rejects. Nothing is ever fabricated here: when no recognized
+ * cookie name (and no bare opaque token) is present, `undefined` is returned so
+ * the caller REFUSES to persist a broken cookie.
  *
- * Fixes:
- *  - The `auth=` segment is located anywhere in the string, not assumed to
- *    be first.
- *  - If no `auth=` pair and no bare opaque token is present, `undefined` is
- *    returned so the caller REFUSES to persist a broken cookie rather than
- *    fabricating `auth=<locale>`.
- *  - The `oc_locale` is preserved from the pasted cookie (so a zh user keeps
- *    the Chinese console page, which the parser now supports), defaulting to
- *    `en` when absent. Only a well-formed short locale (e.g. `en`, `zh`, `ja`)
- *    is kept; anything malformed falls back to `en`.
- *  - All other segments (UI prefs like `desktop_promo_dismissed`) are
- *    dropped; only the auth token and the locale are ever sent.
+ * Dropped on purpose: `oc_locale` (the API is locale-independent JSON now, and
+ * the locale was only ever needed to steer the server-rendered page) and every
+ * unrelated cookie (`__stripe_*`, promo dismissals, …).
  */
 export function normalizeCookie(input: string | undefined): string | undefined {
   if (!input) return undefined
@@ -197,25 +210,35 @@ export function normalizeCookie(input: string | undefined): string | undefined {
 
   const segments = trimmed.split(/[;,]/).map((s) => s.trim()).filter(Boolean)
 
-  // 1) Auth token — order-independent.
-  let auth = segments.find((s) => /^auth=/i.test(s))
-  if (auth === undefined) {
-    // A bare token (no "=") that looks like an opaque auth value.
-    const bare = segments.find((s) => !s.includes('=') && s.length >= 8)
-    if (bare !== undefined) auth = `auth=${bare}`
+  // Collect the recognized cookies by their canonical (case-sensitive) name.
+  const found = new Map<ConsoleCookieName, string>()
+  for (const segment of segments) {
+    const eq = segment.indexOf('=')
+    if (eq < 0) continue
+    const name = segment.slice(0, eq).trim().toLowerCase()
+    const known = CONSOLE_COOKIE_NAMES.find((candidate) => candidate.toLowerCase() === name)
+    if (known === undefined) continue
+    const value = segment.slice(eq + 1).trim().replace(/^"|"$/g, '')
+    if (value.length > 0 && !found.has(known)) found.set(known, value)
   }
-  if (auth === undefined) return undefined
 
-  const authValue = auth.slice(auth.indexOf('=') + 1).trim().replace(/^"|"$/g, '')
-  if (authValue.length === 0) return undefined
+  // A bare opaque token (no `=`): route it by shape. The console session handle
+  // is `st_…`; anything else that looks like an iron-session value is `auth`.
+  if (found.size === 0) {
+    const bare = segments.find((s) => !s.includes('=') && s.length >= 8)?.replace(/^"|"$/g, '')
+    if (bare !== undefined && bare.length > 0) {
+      found.set(bare.startsWith('st_') ? '__Host-console_session' : 'auth', bare)
+    }
+  }
+  if (found.size === 0) return undefined
 
-  // 2) Locale — preserve the pasted one (the zh parser understands zh pages),
-  //    fall back to `en` when absent or malformed.
-  const localeSeg = segments.find((s) => /^oc_locale=/i.test(s))
-  const rawLocale = localeSeg ? localeSeg.slice(localeSeg.indexOf('=') + 1).trim() : ''
-  const locale = /^[A-Za-z]{2,3}$/.test(rawLocale) ? rawLocale.toLowerCase() : 'en'
-
-  return `auth=${authValue}; oc_locale=${locale}`
+  // Emit in a stable order so the masked tail (and the tests) are predictable.
+  return CONSOLE_COOKIE_NAMES
+    .flatMap((name) => {
+      const value = found.get(name)
+      return value === undefined ? [] : [`${name}=${value}`]
+    })
+    .join('; ')
 }
 
 function pickNumber(
