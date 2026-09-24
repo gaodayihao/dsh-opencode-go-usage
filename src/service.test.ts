@@ -26,9 +26,30 @@ const OK_STATUS = JSON.stringify({
   },
 })
 
+/** A realistic billing payload carrying the available credit. */
+const OK_BILLING = JSON.stringify({
+  billingMode: 'prepaid',
+  balanceMicroCents: '1000000000',
+  creditLimitMicroCents: null,
+  availableMicroCents: '1000000000',
+})
+
 /** Answer the mocked fetch with a JSON body. */
 function jsonResponse(body: string, status = 200): Response {
   return new Response(body, { status, headers: { 'content-type': 'application/json' } })
+}
+
+/**
+ * Route the mocked fetch per console endpoint: the read issues two requests,
+ * so answering both with the Go body would leave the credit row silently empty
+ * in every test.
+ * @param status - body for `go/status`.
+ * @param billing - body for `billing/status`.
+ */
+function routeFetch(status: string, billing: string = OK_BILLING): ReturnType<typeof vi.spyOn> {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation((input) =>
+    Promise.resolve(jsonResponse(String(input).endsWith('/billing/status') ? billing : status)),
+  )
 }
 
 describe('OcgoUsageService', () => {
@@ -58,7 +79,7 @@ describe('OcgoUsageService', () => {
   })
 
   it('returns the parsed windows on success', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(OK_STATUS))
+    routeFetch(OK_STATUS)
     const service = new OcgoUsageService(ctx)
     const view = await service.view()
     expect(view.error).toBeUndefined()
@@ -75,21 +96,38 @@ describe('OcgoUsageService', () => {
     expect(view.updatedAt).toBeTypeOf('number')
   })
 
-  it('deduplicates concurrent view() calls into one fetch', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(OK_STATUS))
+  it('carries the available credit into the browser view', async () => {
+    routeFetch(OK_STATUS)
+    const service = new OcgoUsageService(ctx)
+    const view = await service.view()
+    expect(view.credit).toEqual({ available: 1_000_000_000 })
+  })
+
+  it('omits the credit row when the billing payload carries no balance', async () => {
+    routeFetch(OK_STATUS, JSON.stringify({ billingMode: 'legacy' }))
+    const service = new OcgoUsageService(ctx)
+    const view = await service.view()
+    expect(view.error).toBeUndefined()
+    expect(view.credit).toBeUndefined()
+    expect(view.monthly?.percent).toBe(94.7)
+  })
+
+  it('deduplicates concurrent view() calls into one read', async () => {
+    const fetchSpy = routeFetch(OK_STATUS)
     const service = new OcgoUsageService(ctx)
     const [a, b] = await Promise.all([service.view(), service.view()])
     expect(a.weekly?.percent).toBe(50)
     expect(b.weekly?.percent).toBe(50)
-    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    // Two requests per read: the Go meters and the billing balance.
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
   })
 
   it('serves the cached view within the TTL without refetching', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(OK_STATUS))
+    const fetchSpy = routeFetch(OK_STATUS)
     const service = new OcgoUsageService(ctx)
     await service.view()
     await service.view()
-    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
   })
 
   it('returns a noconfig error when the cookie is missing', async () => {
@@ -111,7 +149,7 @@ describe('OcgoUsageService', () => {
     // Cooldown: the second call reuses the error without fetching again.
     const second = await service.view()
     expect(second.error).toBe('http500')
-    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
   })
 
   it('surfaces a rejected session cookie as the named unauthorized error', async () => {
@@ -125,15 +163,16 @@ describe('OcgoUsageService', () => {
   })
 
   it('refresh() bypasses the cache window', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(OK_STATUS))
+    const fetchSpy = routeFetch(OK_STATUS)
     const service = new OcgoUsageService(ctx)
     await service.view()
     await service.refresh()
-    expect(fetchSpy).toHaveBeenCalledTimes(2)
+    // Four requests: two per read, one read per call.
+    expect(fetchSpy).toHaveBeenCalledTimes(4)
   })
 
   it('answers disabled when the plugin is switched off', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(OK_STATUS))
+    const fetchSpy = routeFetch(OK_STATUS)
     const service = new OcgoUsageService(ctx, { enabled: false })
     const view = await service.view()
     expect(view.error).toBe('disabled')

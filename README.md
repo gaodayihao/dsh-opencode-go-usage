@@ -13,21 +13,23 @@
 它是 [pi-ocgo-usage](https://github.com/v587d/pi-ocgo-usage)（Pi 插件）的 Web 对应物：三个用量窗口（5h 滚动 / 每周 / 每月）的百分比与重置倒计时，按阈值变色，让你在窗口耗尽、请求被限流之前就发现。
 
 ```
-OpenCode Go: 5h 0% · wk 0% · mo 95%
+OpenCode Go: 5h 0% · wk 0% · mo 95% · cr $10.00
 ```
 
-点开详情面板还会显示每个窗口的绝对金额（Go 的用量额度现在以**美元**计）：
+点开详情面板还会显示每个窗口的绝对金额（Go 的用量额度现在以**美元**计）与剩余可用额度：
 
 ```
-5h Rolling   0.0%   $0.00 / $12.00 · resets in 0s
-Weekly       0.0%   $0.00 / $30.00 · resets in 5d 21h
-Monthly     94.7%   $56.84 / $60.00 · resets in 7d 0h
+5h Rolling        0.0%   $0.00 / $12.00 · resets in 0s
+Weekly            0.0%   $0.00 / $30.00 · resets in 5d 21h
+Monthly          94.7%   $56.84 / $60.00 · resets in 7d 0h
+Available credit         $10.00
 ```
 
 ## 特性
 
 - **三个窗口** —— 5h 滚动 / 每周 / 每月 的百分比 + 重置倒计时
 - **美元额度** —— Go 的额度是金额上限（$12 / $30 / $60），详情面板显示 `$已用 / $上限`，比单看百分比更直观
+- **剩余可用额度** —— chip 与详情面板额外显示账户的 available credit（余额，按需付费额度），与官方控制台 Billing 页的 “Available credits” 卡片同源；该行在后端未返回余额时自动隐藏，不影响三个窗口
 - **颜色阈值** —— 正常 → 黄色警告（≥80%）→ 红色错误（≥90% 或已限流）
 - **数据新鲜度** —— `upd HH:MM` 显示最近一次成功抓取时间；倒计时按绝对重置时间实时重算，不受 host 缓存影响
 - **轻量轮询** —— 每 10s 轮询（切回标签页立即刷新）；host 端 300s 缓存（TTL 可配）+ 60s 失败冷却，不会频繁打扰 opencode.ai
@@ -117,7 +119,7 @@ chmod 600 ~/.dsh/ocgo-usage.json
 
 | 环境变量 | 默认值 | 说明 |
 |---|---|---|
-| `OPENCODE_GO_BASE_URL` | `https://opencode.ai` | 控制台站点源（API 路径 `/console/api/go/status` 由插件拼接） |
+| `OPENCODE_GO_BASE_URL` | `https://opencode.ai` | 控制台站点源（API 路径 `/console/api/go/status`、`/console/api/billing/status` 由插件拼接） |
 | `OPENCODE_GO_CACHE_TTL` | `300` | host 缓存秒数，范围 60–3600 |
 | `OPENCODE_GO_TIMEOUT_MS` | `10000` | HTTP 超时 |
 
@@ -133,14 +135,18 @@ chmod 600 ~/.dsh/ocgo-usage.json
 
 ## 使用
 
-点击 chip 展开详情面板：每个窗口显示完整名称、百分比、`$已用 / $上限` 与重置倒计时；右下角 `refresh upd HH:MM` 手动刷新并显示数据时间。
+点击 chip 展开详情面板：每个窗口显示完整名称、百分比、`$已用 / $上限` 与重置倒计时，末尾一行显示剩余可用额度；右下角 `refresh upd HH:MM` 手动刷新并显示数据时间。
 
 ![Usage detail](assets/usage-detail.png)
 
 ## 工作原理
 
-- **Host 半**（`src/index.ts`、`src/service.ts`、`src/api.ts`、`src/routes.ts`）—— 携带 cookie 与 `x-org-id: <wrk_…>` 请求头调用控制台的 `GET /console/api/go/status`，把返回的三个金额计量表（`fiveHour` / `week` / `month`，单位 microcents，1e-8 美元）映射成 5h / 每周 / 每月窗口：百分比 = `used / limit`，倒计时来自 `resetsAt`（每月窗口用订阅周期的 `access.endsAt`，与官方控制台自身的算法一致）。结果缓存后通过同源 JSON 端点 `/api/ocgo-usage`（+ `/api/ocgo-usage/refresh`、`/api/ocgo-usage/config`）提供数据。
-- **浏览器半**（`src/client/`）—— 通过 `ctx.slots.inject('conversation.input.right', …)` 向 composer 工具行注册 chip（声明延迟注册：slot 由 composer bar 拥有，插件不依赖加载顺序），只在当前会话选中 `opencode-go` 时轮询 host 端点（每 10s），按严重级别着色渲染三个窗口；可见性来自框架标准席 `useProjection('modelSelection')`。
+- **Host 半**（`src/index.ts`、`src/service.ts`、`src/api.ts`、`src/routes.ts`）—— 携带 cookie 与 `x-org-id: <wrk_…>` 请求头调用控制台的两个 JSON 接口，**共用一个超时窗口并行发出**：
+  - `GET /console/api/go/status` —— 三个金额计量表（`fiveHour` / `week` / `month`，单位 microcents，1e-8 美元）映射成 5h / 每周 / 每月窗口：百分比 = `used / limit`，倒计时来自 `resetsAt`（每月窗口用订阅周期的 `access.endsAt`，与官方控制台自身的算法一致）。
+  - `GET /console/api/billing/status` —— 账户的 `availableMicroCents` 映射成 available credit（官方控制台 Billing 页 “Available credits” 卡片用的就是同一个字段）。这是**次要读取**：该接口失败（无账单档案返回 404、非 owner 返回 403 等）只会隐藏额度行，不会让 chip 变成错误态，也不会拖长主读取。
+
+  结果缓存后通过同源 JSON 端点 `/api/ocgo-usage`（+ `/api/ocgo-usage/refresh`、`/api/ocgo-usage/config`）提供数据。
+- **浏览器半**（`src/client/`）—— 通过 `ctx.slots.inject('conversation.input.right', …)` 向 composer 工具行注册 chip（声明延迟注册：slot 由 composer bar 拥有，插件不依赖加载顺序），只在当前会话选中 `opencode-go` 时轮询 host 端点（每 10s），按严重级别着色渲染三个窗口，并追加一段可用额度；可见性来自框架标准席 `useProjection('modelSelection')`。
 
 浏览器永远看不到 cookie；抓取与解析全部在 host 侧完成。
 
@@ -170,6 +176,16 @@ pnpm test          # vitest run（API 适配 / 配置 / 服务 / provider / chip
 MIT —— 见 [LICENSE](./LICENSE)。
 
 ## Changelog
+
+### v0.3.0 — 显示剩余可用额度（available credit）
+
+- **新增 available credit**：chip 与详情面板多显示一行账户余额（官方控制台 Billing 页 “Available credits” 卡片的那个数字）。数据来自另一个控制台接口 `GET /console/api/billing/status` 的 `availableMicroCents`（microcents，同 Go 计量表单位），例如 `$10.00`。
+  - **并行、共享超时**：两个接口用同一个 `AbortController` 一起发出，整体仍然只受一个 `timeoutMs` 约束，所以多这一行不会多一次往返延迟，也不会让慢的账单接口拖住主读取。
+  - **次要读取，失败即降级**：没有账单档案（404）、非 owner（403）、响应格式变化等情况**只隐藏额度行**，三个窗口照常显示，chip 不会变成错误态。刻意**不**拿 `balanceMicroCents` 顶替 `availableMicroCents`——有信用额度时两者不相等，顶替会报出一个官方界面从不显示的数字。
+  - **`$0.00` 也是有效值**：余额为 0 时照常显示这一行，而不是当作「没有数据」隐藏。
+  - **无窗口时的额度**：账户有余额但没有 Go 计量表（没订阅、或窗口还没打开）时，chip 不再退化成「用量不可用」，而是显示余额。
+  - 解析器是纯函数 `fromBillingJSON`，与 `fromStatusJSON` 一样宽容（缺字段 / 非数字 / 负数 → 该行缺席，不抛错）。
+- **测试**：新增 `fromBillingJSON` / `formatCredit` 单测、chip 与详情面板的额度渲染用例、账单接口失败时的降级用例；`pnpm test` 96 项。
 
 ### v0.2.1 — 修详情面板换行
 

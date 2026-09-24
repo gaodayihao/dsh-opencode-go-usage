@@ -20,7 +20,7 @@
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
 import { type OcgoKey } from './locales.ts';
 export { providerOfModelSelection, OCGO_PROVIDER } from '../provider.ts';
-export { OcgoDockEntry, formatDuration, formatPercent, formatSpend, hasReset, remainingSec } from './OcgoDockEntry.tsx';
+export { OcgoDockEntry, formatCredit, formatDuration, formatPercent, formatSpend, hasReset, remainingSec } from './OcgoDockEntry.tsx';
 export type { OcgoDockEntryProps } from './OcgoDockEntry.tsx';
 declare module '@deepseek-ai/dsh-client-ui-slots' {
     interface LocaleNamespaceMap {

@@ -3,15 +3,15 @@
  * composer toolbar (`conversation.input.right`) next to the model selector.
  * While the session's selected model provider is `opencode-go` the chip polls
  * the host `/api/ocgo-usage` endpoint for the three usage windows
- * (rolling 5h / weekly / monthly);
- * clicking reveals per-window spend + reset countdowns, a Set editor (masked
- * workspace/cookie) and a manual refresh. In the error state, clicking the
- * chip opens the Set editor directly so a stale credential can be replaced in
- * place. The chip renders nothing for every other provider.
+ * (rolling 5h / weekly / monthly) plus the available credit balance;
+ * clicking reveals per-window spend + reset countdowns, the available credit,
+ * a Set editor (masked workspace/cookie) and a manual refresh. In the error
+ * state, clicking the chip opens the Set editor directly so a stale credential
+ * can be replaced in place. The chip renders nothing for every other provider.
  * @module dsh-ocgo-usage/client/OcgoDockEntry
  */
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots';
-import { type UsageWindow } from '../types.ts';
+import { type CreditSummary, type UsageWindow } from '../types.ts';
 import { NS } from './locales.ts';
 /** Composed props of the dock entry (runtime + locale; the session standard kit,
  * including the `useProjection` selector, rides `PropsRuntime`). */
@@ -53,6 +53,17 @@ export declare function hasReset(window: UsageWindow): boolean;
  * @returns the formatted pair, or undefined.
  */
 export declare function formatSpend(window: UsageWindow): string | undefined;
+/**
+ * Format the available credit as a dollar amount (`$10.00`).
+ *
+ * This is a plain money balance, not a percentage meter: it is deliberately
+ * rendered without a severity colour and without a `$used / $limit` pair,
+ * because "available credit" is the one number the console's Billing page puts
+ * on the "Available credits" card.
+ * @param credit - the credit summary from the host snapshot.
+ * @returns the formatted balance.
+ */
+export declare function formatCredit(credit: CreditSummary): string;
 /** Format a window percent for display (keeps one decimal, drops a trailing `.0`). */
 export declare function formatPercent(percent: number): string;
 /**

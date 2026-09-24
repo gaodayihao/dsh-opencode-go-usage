@@ -132,6 +132,14 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* The available-credit row: a plain money balance rather than a percentage
+   meter, so it carries no severity colour — it is the console Billing page's
+   "Available credits" number, rendered at full label strength. */
+.creditValue {
+  color: var(--dsw-alias-label-primary, #0f1115);
+  font-variant-numeric: tabular-nums;
+}
+
 .foot {
   display: flex;
   align-items: center;

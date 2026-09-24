@@ -16,6 +16,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  formatCredit,
   formatSpend,
   hasReset,
   OcgoDockEntry,
@@ -58,6 +59,7 @@ function usageView(): OcgoUsageView {
       limit: 3_000_000_000,
     },
     monthly: { kind: 'monthly', percent: 100, resetInSec: 1537200, status: 'rate-limited' },
+    credit: { available: 1_000_000_000 },
   }
 }
 
@@ -201,6 +203,63 @@ describe('usage chip provider gate', () => {
   })
 })
 
+describe('available credit', () => {
+  it('renders the credit balance on both the chip and the detail panel', async () => {
+    stubFetch()
+    render(<OcgoDockEntry {...props(opencodeGo)} />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('ocgo-chip')).toBeDefined()
+    })
+    // Collapsed: a short segment after the three windows.
+    expect(screen.getByTestId('ocgo-chip-credit').textContent).toContain('cr $10.00')
+
+    fireEvent.click(screen.getByRole('button'))
+    // Expanded: a fourth row, labelled like the console Billing page's card.
+    const row = screen.getByTestId('ocgo-credit')
+    expect(row.textContent).toContain('Available credit')
+    expect(row.textContent).toContain('$10.00')
+  })
+
+  it('omits the credit segment and row when the snapshot carries no balance', async () => {
+    const view = usageView()
+    delete view.credit
+    stubFetch(view)
+    render(<OcgoDockEntry {...props(opencodeGo)} />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('ocgo-chip')).toBeDefined()
+    })
+    expect(screen.queryByTestId('ocgo-chip-credit')).toBeNull()
+    fireEvent.click(screen.getByRole('button'))
+    expect(screen.getByText('5h Rolling')).toBeDefined()
+    expect(screen.queryByTestId('ocgo-credit')).toBeNull()
+  })
+
+  it('still shows a balance-only chip when there are no Go windows', async () => {
+    // An account with credit but no Go subscription: the three meters are
+    // absent, and the "usage unavailable" placeholder would hide a real number.
+    stubFetch({ updatedAt: Date.UTC(2026, 8, 11, 12, 30), credit: { available: 250_000_000 } })
+    render(<OcgoDockEntry {...props(opencodeGo)} />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('ocgo-chip')).toBeDefined()
+    })
+    expect(screen.queryByTestId('ocgo-chip-empty')).toBeNull()
+    expect(screen.getByTestId('ocgo-chip-credit').textContent).toContain('cr $2.50')
+  })
+
+  it('renders a spent balance as $0.00 rather than dropping the row', async () => {
+    stubFetch({ updatedAt: Date.UTC(2026, 8, 11, 12, 30), credit: { available: 0 } })
+    render(<OcgoDockEntry {...props(opencodeGo)} />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('ocgo-chip')).toBeDefined()
+    })
+    expect(screen.getByTestId('ocgo-chip-credit').textContent).toContain('cr $0.00')
+  })
+})
+
 describe('remainingSec', () => {
   /** A window with only the fields the countdown reads. */
   function window(resetInSec: number, resetsAt?: string): UsageWindow {
@@ -239,6 +298,21 @@ describe('hasReset', () => {
 
   it('is false for a window that has not opened yet (no reset at all)', () => {
     expect(hasReset({ ...base, resetInSec: 0 })).toBe(false)
+  })
+})
+
+describe('formatCredit', () => {
+  it('renders microcents as a dollar balance', () => {
+    expect(formatCredit({ available: 1_000_000_000 })).toBe('$10.00')
+    expect(formatCredit({ available: 250_000_000 })).toBe('$2.50')
+  })
+
+  it('keeps two decimals on a sub-dollar balance', () => {
+    expect(formatCredit({ available: 1_234_567 })).toBe('$0.01')
+  })
+
+  it('renders a spent balance as $0.00', () => {
+    expect(formatCredit({ available: 0 })).toBe('$0.00')
   })
 })
 

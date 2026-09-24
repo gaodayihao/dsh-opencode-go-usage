@@ -3,11 +3,11 @@
  * composer toolbar (`conversation.input.right`) next to the model selector.
  * While the session's selected model provider is `opencode-go` the chip polls
  * the host `/api/ocgo-usage` endpoint for the three usage windows
- * (rolling 5h / weekly / monthly);
- * clicking reveals per-window spend + reset countdowns, a Set editor (masked
- * workspace/cookie) and a manual refresh. In the error state, clicking the
- * chip opens the Set editor directly so a stale credential can be replaced in
- * place. The chip renders nothing for every other provider.
+ * (rolling 5h / weekly / monthly) plus the available credit balance;
+ * clicking reveals per-window spend + reset countdowns, the available credit,
+ * a Set editor (masked workspace/cookie) and a manual refresh. In the error
+ * state, clicking the chip opens the Set editor directly so a stale credential
+ * can be replaced in place. The chip renders nothing for every other provider.
  * @module dsh-ocgo-usage/client/OcgoDockEntry
  */
 
@@ -16,6 +16,7 @@ import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots
 import { isOpenCodeGo, providerOfModelSelection } from '../provider.ts'
 import {
   MICROCENTS_PER_USD,
+  type CreditSummary,
   type MaskedConfigView,
   type OcgoUsageView,
   type UsageWindow,
@@ -145,6 +146,20 @@ export function formatSpend(window: UsageWindow): string | undefined {
   const used = (window.usage / MICROCENTS_PER_USD).toFixed(2)
   const limit = (window.limit / MICROCENTS_PER_USD).toFixed(2)
   return `$${used} / $${limit}`
+}
+
+/**
+ * Format the available credit as a dollar amount (`$10.00`).
+ *
+ * This is a plain money balance, not a percentage meter: it is deliberately
+ * rendered without a severity colour and without a `$used / $limit` pair,
+ * because "available credit" is the one number the console's Billing page puts
+ * on the "Available credits" card.
+ * @param credit - the credit summary from the host snapshot.
+ * @returns the formatted balance.
+ */
+export function formatCredit(credit: CreditSummary): string {
+  return `$${(credit.available / MICROCENTS_PER_USD).toFixed(2)}`
 }
 
 /** The severity class of one window (muted → escalating warn → err). */
@@ -445,7 +460,9 @@ export function OcgoDockEntry(props: OcgoDockEntryProps): React.ReactElement | n
   ].filter((w): w is UsageWindow => w !== undefined)
 
   // No windows at all (e.g. brand-new account): show unavailable, refreshable.
-  if (windows.length === 0) {
+  // An account can carry credit without any Go meter (no subscription, or one
+  // that has not opened yet), and that balance is still worth showing.
+  if (windows.length === 0 && snapshot.credit === undefined) {
     return (
       <button
         type="button"
@@ -471,6 +488,12 @@ export function OcgoDockEntry(props: OcgoDockEntryProps): React.ReactElement | n
         {windows.map((w) => (
           <WindowSegment key={w.kind} window={w} sep={sep} compact />
         ))}
+        {snapshot.credit !== undefined && (
+          <span className={css.seg} data-testid="ocgo-chip-credit">
+            <span className={css.segSep}>{sep}</span>
+            <span>{t('ocgo.creditShort')} {formatCredit(snapshot.credit)}</span>
+          </span>
+        )}
         <span className={open ? `${css.chevron} ${css.chevronOpen}` : css.chevron} aria-hidden="true">
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
             <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
@@ -532,6 +555,14 @@ export function OcgoDockEntry(props: OcgoDockEntryProps): React.ReactElement | n
                   </span>
                 )
               })}
+              {snapshot.credit !== undefined && (
+                <span className={css.window} data-testid="ocgo-credit">
+                  <span className={css.windowLabel}>{t('ocgo.credit')}</span>
+                  <span className={css.windowValue}>
+                    <span className={css.creditValue}>{formatCredit(snapshot.credit)}</span>
+                  </span>
+                </span>
+              )}
               <span className={css.foot}>
                 <button type="button" className={css.setBtn} onClick={openSet}>
                   {t('ocgo.set')}

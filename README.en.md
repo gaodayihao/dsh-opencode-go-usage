@@ -13,21 +13,23 @@ A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) **bu
 The Web counterpart of the [pi-ocgo-usage](https://github.com/v587d/pi-ocgo-usage) Pi extension: three usage windows (rolling 5h, weekly, monthly) with percentages and reset countdowns, color-coded so you see a window approaching exhaustion before you hit the rate limit mid-work.
 
 ```
-OpenCode Go: 5h 0% · wk 0% · mo 95%
+OpenCode Go: 5h 0% · wk 0% · mo 95% · cr $10.00
 ```
 
-Expanding the panel also shows each window's absolute spend — Go's windows are **money** allowances ($12 / $30 / $60):
+Expanding the panel also shows each window's absolute spend — Go's windows are **money** allowances ($12 / $30 / $60) — plus the account's available credit:
 
 ```
-5h Rolling   0.0%   $0.00 / $12.00 · resets in 0s
-Weekly       0.0%   $0.00 / $30.00 · resets in 5d 21h
-Monthly     94.7%   $56.84 / $60.00 · resets in 7d 0h
+5h Rolling        0.0%   $0.00 / $12.00 · resets in 0s
+Weekly            0.0%   $0.00 / $30.00 · resets in 5d 21h
+Monthly          94.7%   $56.84 / $60.00 · resets in 7d 0h
+Available credit         $10.00
 ```
 
 ## Features
 
 - **Three windows** — rolling (5h) / weekly / monthly percent + reset countdown
 - **Dollar allowances** — Go's windows are money caps ($12 / $30 / $60); the detail panel shows `$used / $limit`, which explains the percentage
+- **Available credit** — the chip and the detail panel also show the account's pay-as-you-go balance, the same number as the console Billing page's "Available credits" card. The row hides itself whenever the host has no balance to report, and never affects the three windows
 - **Color thresholds** — muted → warning (≥80%) → error (≥90% or rate-limited)
 - **Data freshness** — `upd HH:MM` shows the last successful fetch time; the countdown is re-derived from the absolute reset time, so the host cache cannot freeze it
 - **Lightweight polling** — every 10 s (and on tab refocus); the host caches for 300 s (TTL configurable) with a 60 s failure cooldown, so opencode.ai is never hammered
@@ -117,7 +119,7 @@ Priority: env vars > config file > built-in defaults.
 
 | Env var | Default | Description |
 |---|---|---|
-| `OPENCODE_GO_BASE_URL` | `https://opencode.ai` | Console origin (the plugin appends the `/console/api/go/status` path) |
+| `OPENCODE_GO_BASE_URL` | `https://opencode.ai` | Console origin (the plugin appends the `/console/api/go/status` and `/console/api/billing/status` paths) |
 | `OPENCODE_GO_CACHE_TTL` | `300` | Host cache TTL in seconds, clamped to 60–3600 |
 | `OPENCODE_GO_TIMEOUT_MS` | `10000` | HTTP timeout |
 
@@ -133,14 +135,18 @@ Composition-level config (via `~/.dsh/profiles/web/cordis.patch.yml`):
 
 ## Usage
 
-Click the chip to expand the detail panel: each window shows its full name, percent, `$used / $limit`, and reset countdown; `refresh upd HH:MM` (bottom-right) refreshes manually and shows the data time.
+Click the chip to expand the detail panel: each window shows its full name, percent, `$used / $limit`, and reset countdown, and a final row shows the available credit; `refresh upd HH:MM` (bottom-right) refreshes manually and shows the data time.
 
 ![Usage detail](assets/usage-detail.png)
 
 ## How it works
 
-- **Host half** (`src/index.ts`, `src/service.ts`, `src/api.ts`, `src/routes.ts`) — sends the cookie plus an `x-org-id: <wrk_…>` header to the console's `GET /console/api/go/status` and maps the three money meters it returns (`fiveHour` / `week` / `month`, in microcents — 1e-8 USD) onto the rolling / weekly / monthly windows: percent = `used / limit`, countdown from `resetsAt` (the monthly meter borrows the subscription period's `access.endsAt`, exactly as the official console page does). The result is cached and served as same-origin JSON at `/api/ocgo-usage` (+ `/api/ocgo-usage/refresh`, `/api/ocgo-usage/config`).
-- **Browser half** (`src/client/`) — registers a chip into the composer tool row via `ctx.slots.inject('conversation.input.right', …)` (declaration-deferred: the composer bar owns the slot, so the plugin needs no load-order dependency), polls the host endpoints every 10 s while — and only while — the session selects `opencode-go`, and renders the three windows with severity colors; visibility comes from the framework standard seat `useProjection('modelSelection')`.
+- **Host half** (`src/index.ts`, `src/service.ts`, `src/api.ts`, `src/routes.ts`) — sends the cookie plus an `x-org-id: <wrk_…>` header to **two** console JSON endpoints, issued together under one shared timeout:
+  - `GET /console/api/go/status` — the three money meters it returns (`fiveHour` / `week` / `month`, in microcents — 1e-8 USD) mapped onto the rolling / weekly / monthly windows: percent = `used / limit`, countdown from `resetsAt` (the monthly meter borrows the subscription period's `access.endsAt`, exactly as the official console page does).
+  - `GET /console/api/billing/status` — the account's `availableMicroCents` mapped onto the available credit (the very field the console's Billing page renders in its "Available credits" card). This is the **secondary** read: when it fails (404 for an account with no billing profile, 403 for a non-owner, a renamed field) only the credit row disappears — the chip never turns into an error state, and a slow billing endpoint cannot hold the main read open.
+
+  The result is cached and served as same-origin JSON at `/api/ocgo-usage` (+ `/api/ocgo-usage/refresh`, `/api/ocgo-usage/config`).
+- **Browser half** (`src/client/`) — registers a chip into the composer tool row via `ctx.slots.inject('conversation.input.right', …)` (declaration-deferred: the composer bar owns the slot, so the plugin needs no load-order dependency), polls the host endpoints every 10 s while — and only while — the session selects `opencode-go`, and renders the three windows with severity colors plus a credit segment; visibility comes from the framework standard seat `useProjection('modelSelection')`.
 
 The browser never sees the cookie; all fetching and parsing happen on the host.
 
@@ -166,6 +172,16 @@ pnpm test          # vitest run (API adapter / config / service / provider / chi
 The build config (`shared/tsdown.client.ts`) is adapted from [dsh-balance-meter](https://github.com/Ghost011118/dsh-balance-meter) (BSD-3-Clause), itself a copy of the official DSH `packages/client/tsdown.client.ts` — it emits the `window.__ModuleLoader__.load({id, factory})` closure-factory artifact the web shell's module table consumes. `shared/web-platform.ts` must stay in sync with the installed DSH's `packages/client/web/src/platform.ts`.
 
 ## Changelog
+
+### v0.3.0 — Show the available credit
+
+- **Available credit added**: the chip and the detail panel now show the account's balance — the number on the console Billing page's "Available credits" card. It comes from a second console endpoint, `GET /console/api/billing/status` → `availableMicroCents` (microcents, the same unit as the Go meters), e.g. `$10.00`.
+  - **Parallel, one shared deadline**: both endpoints are issued together under a single `AbortController`, so the row costs no extra round-trip of latency and a slow billing endpoint cannot stretch the main read.
+  - **Secondary read, degrades quietly**: no billing profile (404), a non-owner (403), or a reshaped response only hides the credit row — the three windows keep rendering and the chip never becomes an error state. `balanceMicroCents` is deliberately **not** substituted for `availableMicroCents`: with a credit line the two differ, so the substitution would report a number the official UI never shows.
+  - **`$0.00` is a real answer**: a spent balance still renders the row instead of hiding it as "no data".
+  - **Credit without windows**: an account with a balance but no Go meters (no subscription, or a window that has not opened) shows the balance rather than collapsing to "usage unavailable".
+  - Parsing lives in a pure `fromBillingJSON`, as tolerant as `fromStatusJSON` (missing / non-numeric / negative → the row is absent, never a throw).
+- **Tests**: new `fromBillingJSON` / `formatCredit` unit tests, credit rendering cases for both the chip and the detail panel, and a degradation case for a failing billing endpoint; `pnpm test` covers 96 tests.
 
 ### v0.2.1 — Detail panel no longer wraps
 

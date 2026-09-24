@@ -33,11 +33,31 @@
  * exactly this mapping. `access` is null for a workspace without a Go
  * subscription, which is a valid "no windows" answer rather than an error.
  *
+ * The available-credit balance does not live in that payload at all: the read
+ * issues a second, independent request,
+ *
+ * ```jsonc
+ * // GET <baseUrl>/console/api/billing/status
+ * {
+ *   "billingMode": "prepaid",
+ *   "mode": "pay-as-you-go",
+ *   "balanceMicroCents": "1000000000",
+ *   "creditLimitMicroCents": null,
+ *   "availableMicroCents": "1000000000",   // the "Available credits" card
+ *   "canPurchaseCredits": true
+ * }
+ * ```
+ *
+ * and turns `availableMicroCents` into {@link CreditSummary}. The two requests
+ * share one deadline and are issued together; the credit read is secondary, so
+ * a failing billing endpoint (404 on an account with no billing profile, 403
+ * for a non-owner) only drops the credit row.
+ *
  * Adapted from pi-ocgo-usage/src/api.ts.
  * @module dsh-ocgo-usage/api
  */
-
 import type {
+  CreditSummary,
   NormalizedUsage,
   OcgoConfig,
   UsageWindow,
@@ -50,6 +70,16 @@ import type {
 
 /** Console JSON endpoint carrying the Go subscription meters. */
 export const GO_STATUS_PATH = '/console/api/go/status'
+
+/**
+ * Console JSON endpoint carrying the account's credit balance.
+ *
+ * This is the request behind the console Billing page's "Available credits"
+ * card. It is a *separate* resource from the Go meters — `go/status` never
+ * reports the pay-as-you-go balance — and it is secondary to this plugin's
+ * read, so a failure here drops the credit row instead of failing the chip.
+ */
+export const BILLING_STATUS_PATH = '/console/api/billing/status'
 
 /** Header the console uses to select the workspace for an API call. */
 export const WORKSPACE_HEADER = 'x-org-id'
@@ -88,52 +118,69 @@ export async function fetchViaCookie(cfg: OcgoConfig): Promise<Omit<NormalizedUs
   if (!cfg.cookie || !cfg.workspaceID) {
     throw new UsageError('Missing cookie or workspaceID for cookie path', 'noconfig')
   }
-  const payload = await fetchGoStatus(cfg)
-  return fromStatusJSON(payload, Date.now())
+
+  // One deadline covers the whole read. The two requests go out together so the
+  // credit balance costs no extra round-trip of latency; the billing probe is
+  // secondary, so its failures (and its stragglers) never fail the read.
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), cfg.timeoutMs)
+  try {
+    const [status, billing] = await Promise.all([
+      getJSON(cfg, GO_STATUS_PATH, controller.signal),
+      getJSON(cfg, BILLING_STATUS_PATH, controller.signal).catch(() => undefined),
+    ])
+    const credit = fromBillingJSON(billing)
+    return {
+      ...fromStatusJSON(status, Date.now()),
+      ...(credit === undefined ? {} : { credit }),
+    }
+  } finally {
+    clearTimeout(timer)
+    // On the success path both requests have already settled, so this is a
+    // no-op; on the failure path it cancels the request still in flight rather
+    // than leaving it to run out its own timeout unobserved.
+    controller.abort()
+  }
 }
 
 /**
- * GET the Go status endpoint and return the decoded JSON.
+ * GET one console JSON endpoint and return the decoded body.
  *
  * The console answers a machine-readable `{"_tag":"…"}` body for the failures
  * worth naming, so those become dedicated error codes instead of a generic
  * `http4xx`: a rejected session cookie is by far the most common one (it is
  * what a stale paste produces) and deserves a message that says what to do.
- * @param cfg - resolved config (cookie, workspace, origin, timeout).
+ * @param cfg - resolved config (cookie, workspace, origin).
+ * @param path - console API path to request (origin-relative).
+ * @param signal - the read-wide abort signal (the deadline timer arms it).
  * @returns the decoded JSON payload (shape unvalidated; the parser tolerates it).
  */
-async function fetchGoStatus(cfg: OcgoConfig): Promise<unknown> {
-  const url = `${cfg.baseUrl}${GO_STATUS_PATH}`
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), cfg.timeoutMs)
+async function getJSON(cfg: OcgoConfig, path: string, signal: AbortSignal): Promise<unknown> {
+  const url = `${cfg.baseUrl}${path}`
   // The abort signal stays armed through the body read, so the timeout covers
   // the whole exchange rather than just the response headers.
+  let res: Response
   try {
-    let res: Response
-    try {
-      res = await fetch(url, {
-        method: 'GET',
-        headers: {
-          Cookie: cfg.cookie ?? '',
-          Accept: 'application/json',
-          [WORKSPACE_HEADER]: cfg.workspaceID ?? '',
-        },
-        signal: controller.signal,
-      })
-    } catch (e) {
-      throw transportError(e, cfg.timeoutMs)
-    }
+    res = await fetch(url, {
+      method: 'GET',
+      headers: {
+        Cookie: cfg.cookie ?? '',
+        Accept: 'application/json',
+        [WORKSPACE_HEADER]: cfg.workspaceID ?? '',
+      },
+      signal,
+    })
+  } catch (e) {
+    throw transportError(e, cfg.timeoutMs)
+  }
 
-    if (!res.ok) throw statusError(res.status)
+  if (!res.ok) throw statusError(res.status, path)
 
-    try {
-      return (await res.json()) as unknown
-    } catch (e) {
-      if (isAbort(e)) throw transportError(e, cfg.timeoutMs)
-      throw new UsageError(`Usage API returned a non-JSON body (HTTP ${res.status})`, 'parse')
-    }
-  } finally {
-    clearTimeout(timer)
+  try {
+    return (await res.json()) as unknown
+  } catch (e) {
+    if (isAbort(e)) throw transportError(e, cfg.timeoutMs)
+    throw new UsageError(`Usage API returned a non-JSON body (HTTP ${res.status})`, 'parse')
   }
 }
 
@@ -149,7 +196,7 @@ function transportError(error: unknown, timeoutMs: number): UsageError {
 }
 
 /** Map an unsuccessful HTTP status onto a named error. */
-function statusError(status: number): UsageError {
+function statusError(status: number, path: string): UsageError {
   if (status === 400) {
     return new UsageError(
       'The console rejected the workspace id (x-org-id); it must be a wrk_… id you are a member of.',
@@ -168,12 +215,32 @@ function statusError(status: number): UsageError {
       'notfound',
     )
   }
-  return new UsageError(`HTTP ${status} for ${GO_STATUS_PATH}`, `http${status}`)
+  return new UsageError(`HTTP ${status} for ${path}`, `http${status}`)
 }
 
 // ============================================================================
 // Response parsing
 // ============================================================================
+
+/**
+ * Parse the console billing payload into the available-credit summary.
+ *
+ * Reads `availableMicroCents` — the very field the console's Billing page
+ * renders in its "Available credits" card — and nothing else. The sibling
+ * `balanceMicroCents` is deliberately NOT used as a fallback: for an account
+ * with a credit line the two differ (available = balance + limit), so silently
+ * substituting one for the other would report a number the console never
+ * shows. A payload without the field yields undefined, which the UI renders as
+ * "no credit row" rather than as $0.00.
+ * @param payload - the decoded JSON body.
+ * @returns the credit summary, or undefined when the payload carried no balance.
+ */
+export function fromBillingJSON(payload: unknown): CreditSummary | undefined {
+  if (!isRecord(payload)) return undefined
+  const available = decimal(member(payload, 'availableMicroCents'))
+  if (available === undefined) return undefined
+  return { available }
+}
 
 /**
  * Parse the Go status payload into the three usage windows.

@@ -14,6 +14,8 @@ export declare const zh: {
     readonly 'ocgo.rolling': "5h 滚动";
     readonly 'ocgo.weekly': "每周";
     readonly 'ocgo.monthly': "每月";
+    readonly 'ocgo.credit': "可用额度";
+    readonly 'ocgo.creditShort': "余额";
     readonly 'ocgo.rateLimited': "已限流";
     readonly 'ocgo.resetsIn': "剩余 {duration}";
     readonly 'ocgo.expand': "展开用量详情";
@@ -35,6 +37,8 @@ export declare const en: {
     readonly 'ocgo.rolling': "5h Rolling";
     readonly 'ocgo.weekly': "Weekly";
     readonly 'ocgo.monthly': "Monthly";
+    readonly 'ocgo.credit': "Available credit";
+    readonly 'ocgo.creditShort': "cr";
     readonly 'ocgo.rateLimited': "rate-limited";
     readonly 'ocgo.resetsIn': "resets in {duration}";
     readonly 'ocgo.expand': "Show usage details";

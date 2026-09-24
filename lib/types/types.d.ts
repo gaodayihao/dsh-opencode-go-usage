@@ -44,6 +44,19 @@ export interface UsageWindow {
      */
     readonly resetsAt?: string;
 }
+/**
+ * The workspace's credit standing, from the console billing API.
+ *
+ * This is NOT one of the Go subscription meters: it is the pay-as-you-go
+ * balance the console's Billing page renders under "Available credits" —
+ * money the account can spend on managed inference beyond (or instead of) the
+ * Go plan's capped windows. Reported in microcents like every other money
+ * field.
+ */
+export interface CreditSummary {
+    /** Credits available for managed inference usage, in microcents (1e-8 USD). */
+    readonly available: number;
+}
 /** Normalized usage shape shared by every fetch path. */
 export interface NormalizedUsage {
     /** Epoch ms of the last successful fetch (data freshness). */
@@ -52,6 +65,8 @@ export interface NormalizedUsage {
     readonly rolling?: UsageWindow;
     readonly weekly?: UsageWindow;
     readonly monthly?: UsageWindow;
+    /** Available credit, when the billing API reported a balance. */
+    readonly credit?: CreditSummary;
 }
 /** Fully resolved plugin configuration (env + config file + defaults). */
 export interface OcgoConfig {
@@ -78,6 +93,8 @@ export interface OcgoUsageView {
     readonly rolling?: UsageWindowView;
     readonly weekly?: UsageWindowView;
     readonly monthly?: UsageWindowView;
+    /** Available credit, when the billing API reported a balance. */
+    readonly credit?: CreditSummary;
     /** Machine-readable error code, present only on failure. */
     readonly error?: string;
     /** Human-readable failure detail (never contains the cookie). */

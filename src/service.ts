@@ -12,7 +12,7 @@ import { fetchUsage, UsageError } from './api.ts'
 import { loadConfig } from './config.ts'
 import type { NormalizedUsage, OcgoUsageView } from './types.ts'
 
-export type { NormalizedUsage, OcgoUsageView, UsageWindow, UsageWindowKind, UsageStatus } from './types.ts'
+export type { CreditSummary, NormalizedUsage, OcgoUsageView, UsageWindow, UsageWindowKind, UsageStatus } from './types.ts'
 
 /** Plugin configuration. */
 export interface OcgoUsageConfig {
@@ -139,5 +139,6 @@ function toView(data: NormalizedUsage): OcgoUsageView {
     ...(data.rolling === undefined ? {} : { rolling: data.rolling }),
     ...(data.weekly === undefined ? {} : { weekly: data.weekly }),
     ...(data.monthly === undefined ? {} : { monthly: data.monthly }),
+    ...(data.credit === undefined ? {} : { credit: data.credit }),
   }
 }

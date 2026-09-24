@@ -9,7 +9,15 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fetchViaCookie, fromStatusJSON, GO_STATUS_PATH, UsageError, WORKSPACE_HEADER } from './api.ts'
+import {
+  BILLING_STATUS_PATH,
+  fetchViaCookie,
+  fromBillingJSON,
+  fromStatusJSON,
+  GO_STATUS_PATH,
+  UsageError,
+  WORKSPACE_HEADER,
+} from './api.ts'
 import type { OcgoConfig } from './types.ts'
 
 /** The real payload shape, trimmed to the fields the adapter reads. */
@@ -45,6 +53,18 @@ const STATUS = {
 
 /** A fixed clock so `resetInSec` is deterministic. */
 const NOW = Date.parse('2026-09-22T00:00:00.000Z')
+
+/** The real billing payload shape, trimmed to the field the adapter reads. */
+const BILLING = {
+  billingMode: 'prepaid',
+  mode: 'pay-as-you-go',
+  balanceMicroCents: '1000000000',
+  creditLimitMicroCents: null,
+  availableMicroCents: '1000000000',
+  canPurchaseCredits: true,
+  canEnableAutoRecharge: true,
+  canEnrollInPrepaid: false,
+}
 
 function config(overrides: Partial<OcgoConfig> = {}): OcgoConfig {
   return {
@@ -219,34 +239,108 @@ describe('fromStatusJSON', () => {
   })
 })
 
+describe('fromBillingJSON', () => {
+  it('reads availableMicroCents as the available credit', () => {
+    expect(fromBillingJSON(BILLING)).toEqual({ available: 1_000_000_000 })
+  })
+
+  it('accepts a numeric member as well as the BigInt decimal string', () => {
+    expect(fromBillingJSON({ availableMicroCents: 250 })).toEqual({ available: 250 })
+  })
+
+  it('reports a zero balance rather than treating it as absent', () => {
+    // $0.00 is a real answer (credit spent) and must still render a row.
+    expect(fromBillingJSON({ availableMicroCents: '0' })).toEqual({ available: 0 })
+  })
+
+  it('ignores balanceMicroCents when availableMicroCents is absent', () => {
+    // For an account with a credit line the two differ, so substituting one for
+    // the other would report a number the console never shows.
+    expect(fromBillingJSON({ balanceMicroCents: '1000000000' })).toBeUndefined()
+  })
+
+  it('returns undefined for a missing, malformed or negative balance', () => {
+    expect(fromBillingJSON({})).toBeUndefined()
+    expect(fromBillingJSON({ availableMicroCents: null })).toBeUndefined()
+    expect(fromBillingJSON({ availableMicroCents: 'not-a-number' })).toBeUndefined()
+    expect(fromBillingJSON({ availableMicroCents: '-5' })).toBeUndefined()
+    expect(fromBillingJSON(null)).toBeUndefined()
+    expect(fromBillingJSON('nope')).toBeUndefined()
+    expect(fromBillingJSON([{ availableMicroCents: '1' }])).toBeUndefined()
+  })
+})
+
 describe('fetchViaCookie', () => {
-  /** Spy fetch and answer with a JSON payload. */
-  function stubFetch(body: unknown, init: ResponseInit = {}): ReturnType<typeof vi.spyOn> {
-    return vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(typeof body === 'string' ? body : JSON.stringify(body), {
+  /**
+   * Spy fetch and answer each console endpoint from its own payload.
+   *
+   * The read issues two requests (Go meters + billing balance), so a stub
+   * keyed on nothing would hand the Go parser a billing body. `billing: null`
+   * instead answers that endpoint with a 404 — the shape an account with no
+   * billing profile gets.
+   * @param status - body (or raw string) for `go/status`.
+   * @param init - response init applied to both endpoints.
+   * @param billing - body for `billing/status`; `null` → HTTP 404.
+   */
+  function stubFetch(
+    status: unknown,
+    init: ResponseInit = {},
+    billing: unknown = BILLING,
+  ): ReturnType<typeof vi.spyOn> {
+    return vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const isBilling = String(input).endsWith(BILLING_STATUS_PATH)
+      const body = isBilling ? billing : status
+      if (isBilling && body === null) {
+        return Promise.resolve(new Response('', { status: 404 }))
+      }
+      return Promise.resolve(new Response(typeof body === 'string' ? body : JSON.stringify(body), {
         status: 200,
         headers: { 'content-type': 'application/json' },
         ...init,
-      }),
-    )
+      }))
+    })
   }
 
-  it('calls the console status endpoint with the cookie and the x-org-id header', async () => {
+  it('calls both console endpoints with the cookie and the x-org-id header', async () => {
     const spy = stubFetch(STATUS)
     await fetchViaCookie(config())
-    expect(spy).toHaveBeenCalledTimes(1)
+    expect(spy).toHaveBeenCalledTimes(2)
+
     const [url, request] = spy.mock.calls[0] as [string, RequestInit]
     expect(url).toBe(`https://opencode.ai${GO_STATUS_PATH}`)
     const headers = request.headers as Record<string, string>
     expect(headers.Cookie).toBe('__Host-console_session=st_test')
     expect(headers[WORKSPACE_HEADER]).toBe('wrk_01M13HM69T4HK5M026TQEZ33KN')
     expect(request.method).toBe('GET')
+
+    // The balance is a separate resource; it rides the same credentials.
+    const [billingUrl, billingRequest] = spy.mock.calls[1] as [string, RequestInit]
+    expect(billingUrl).toBe(`https://opencode.ai${BILLING_STATUS_PATH}`)
+    expect((billingRequest.headers as Record<string, string>).Cookie).toBe('__Host-console_session=st_test')
+  })
+
+  it('carries the available credit alongside the windows', async () => {
+    stubFetch(STATUS)
+    const data = await fetchViaCookie(config())
+    expect(data.credit).toEqual({ available: 1_000_000_000 })
+    expect(data.weekly?.percent).toBe(50)
+  })
+
+  it('drops the credit row when the billing endpoint fails, keeping the windows', async () => {
+    // The billing read is secondary: a 403 (non-owner) or 404 (no billing
+    // profile) must not blank the chip that the Go meters can still fill.
+    stubFetch(STATUS, {}, null)
+    const data = await fetchViaCookie(config())
+    expect(data.credit).toBeUndefined()
+    expect(data.weekly?.percent).toBe(50)
+    expect(data.monthly?.percent).toBe(94.7)
   })
 
   it('honors a custom base URL (trailing origin only)', async () => {
     const spy = stubFetch(STATUS)
     await fetchViaCookie(config({ baseUrl: 'https://console.example.test' }))
     expect((spy.mock.calls[0] as [string])[0]).toBe(`https://console.example.test${GO_STATUS_PATH}`)
+    expect((spy.mock.calls[1] as [string])[0]).toBe(`https://console.example.test${BILLING_STATUS_PATH}`)
   })
 
   it('refuses to fetch without a cookie or workspace', async () => {
@@ -319,7 +413,7 @@ describe('fetchViaCookie', () => {
   })
 
   it('answers an empty read (no subscription) without throwing', async () => {
-    stubFetch({ access: null })
+    stubFetch({ access: null }, {}, null)
     await expect(fetchViaCookie(config())).resolves.toEqual({})
   })
 })
